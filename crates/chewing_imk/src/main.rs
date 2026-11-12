@@ -36,10 +36,12 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         None => run_server(),
-        Some("--register") => register::register_and_enable(),
+        Some("--register") => register::register(),
+        Some("--unregister") => register::unregister(),
+        Some("--status") => register::status(),
         Some(other) => {
             eprintln!("unknown argument: {other}");
-            eprintln!("usage: ChewingIMK [--register]");
+            eprintln!("usage: ChewingIMK [--register | --unregister | --status]");
             ExitCode::FAILURE
         }
     }

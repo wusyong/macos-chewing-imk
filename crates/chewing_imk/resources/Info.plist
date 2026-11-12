@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- @VERSION@ is filled in by `cargo xtask bundle` from the workspace version. -->
+<!-- The version placeholders below are filled in by `cargo xtask bundle` from the workspace version. -->
 <plist version="1.0">
 <dict>
 	<key>CFBundleDevelopmentRegion</key>
@@ -15,6 +15,8 @@
 	<string>新酷音</string>
 	<key>CFBundleDisplayName</key>
 	<string>新酷音</string>
+	<key>LSHasLocalizedDisplayName</key>
+	<true/>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
@@ -46,12 +48,60 @@
 	<key>tsInputMethodCharacterRepertoireKey</key>
 	<array>
 		<string>Hant</string>
-		<string>Bopo</string>
-		<string>Latn</string>
 	</array>
 	<key>tsInputMethodIconFileKey</key>
 	<string>MenuIcon.tiff</string>
 	<key>TISIconIsTemplate</key>
 	<true/>
+	<!-- Let macOS switch to ABC with Caps Lock if the user turned that on;
+	     the input method leaves Caps Lock to the system by default. -->
+	<key>TICapsLockLanguageSwitchCapable</key>
+	<true/>
+
+	<!-- System Settings only offers input modes, so the input method needs
+	     one. Laid out like OpenVanilla McBopomofo's Info.plist. The mode
+	     needs its own TISInputSourceID (or macOS derives one that does not
+	     match the InfoPlist.strings key and the mode shows with no name) and
+	     TISIconIsTemplate (or the icon is drawn as a plain image). -->
+	<key>ComponentInputModeDict</key>
+	<dict>
+		<key>tsInputModeListKey</key>
+		<dict>
+			<key>im.chewing.inputmethod.Chewing.Zhuyin</key>
+			<dict>
+				<key>TISInputSourceID</key>
+				<string>im.chewing.inputmethod.Chewing.Zhuyin</string>
+				<key>TISIntendedLanguage</key>
+				<string>zh-Hant</string>
+				<key>TISIconIsTemplate</key>
+				<true/>
+				<key>tsInputModeAlternateMenuIconFileKey</key>
+				<string>MenuIcon.tiff</string>
+				<key>tsInputModeCharacterRepertoireKey</key>
+				<array>
+					<string>Hant</string>
+					<string>Han</string>
+				</array>
+				<key>tsInputModeDefaultStateKey</key>
+				<true/>
+				<key>tsInputModeIsVisibleKey</key>
+				<true/>
+				<key>tsInputModeKeyEquivalentModifiersKey</key>
+				<integer>4608</integer>
+				<key>tsInputModeMenuIconFileKey</key>
+				<string>MenuIcon.tiff</string>
+				<key>tsInputModePaletteIconFileKey</key>
+				<string>MenuIcon.tiff</string>
+				<key>tsInputModePrimaryInScriptKey</key>
+				<true/>
+				<key>tsInputModeScriptKey</key>
+				<string>smTradChinese</string>
+			</dict>
+		</dict>
+		<key>tsVisibleInputModeOrderedArrayKey</key>
+		<array>
+			<string>im.chewing.inputmethod.Chewing.Zhuyin</string>
+		</array>
+	</dict>
 </dict>
 </plist>

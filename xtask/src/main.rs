@@ -7,8 +7,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
-const APP_NAME: &str = "ChewingIMK.app";
-const EXECUTABLE: &str = "ChewingIMK";
+mod install;
+
+pub(crate) const APP_NAME: &str = "ChewingIMK.app";
+pub(crate) const EXECUTABLE: &str = "ChewingIMK";
 const SUBSYSTEM: &str = "im.chewing.inputmethod.Chewing";
 
 /// Pinned dictionary release, same as windows-chewing-tsf's
@@ -26,18 +28,19 @@ const DATA_FILES: &[&str] = &[
 ];
 
 const USAGE: &str = "\
-usage: cargo xtask <command> [--release]
+usage: cargo xtask <command> [--release] [--purge]
 
 commands:
   fetch-data download and verify the pinned libchewing-data dictionary
   test       fetch-data, then run the workspace tests against it
-  bundle     build ChewingIMK and assemble target/<profile>/ChewingIMK.app
-  install    bundle, copy to ~/Library/Input Methods, restart and register it
-  uninstall  stop ChewingIMK and remove it from ~/Library/Input Methods
+  bundle     build ChewingIMK and assemble target/<profile>/bundle.noindex/ChewingIMK.app
+  install    bundle, install or update in ~/Library/Input Methods, enable it
+  uninstall  disable and remove the input method (--purge: also settings and
+             user dictionary)
   log        stream the input method's os_log output (debug level)
 ";
 
-type Result<T = ()> = std::result::Result<T, String>;
+pub(crate) type Result<T = ()> = std::result::Result<T, String>;
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
@@ -46,8 +49,8 @@ fn main() -> ExitCode {
         Some("fetch-data") => fetch_data().map(|dir| println!("dictionary: {}", dir.display())),
         Some("test") => test(),
         Some("bundle") => bundle(release).map(|app| println!("bundled {}", app.display())),
-        Some("install") => install(release),
-        Some("uninstall") => uninstall(),
+        Some("install") => install::install(release),
+        Some("uninstall") => install::uninstall(args.iter().any(|a| a == "--purge")),
         Some("log") => stream_log(),
         Some("help" | "-h" | "--help") | None => {
             print!("{USAGE}");
@@ -64,14 +67,14 @@ fn main() -> ExitCode {
     }
 }
 
-fn workspace_root() -> PathBuf {
+pub(crate) fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("xtask lives in the workspace root")
         .to_path_buf()
 }
 
-fn run(cmd: &mut Command) -> Result {
+pub(crate) fn run(cmd: &mut Command) -> Result {
     let status = cmd
         .status()
         .map_err(|e| format!("failed to run {cmd:?}: {e}"))?;
@@ -147,8 +150,18 @@ fn test() -> Result {
         .env("CHEWING_TEST_DATA_DIR", dict_dir))
 }
 
+/// Where `bundle` assembles the app. The `.noindex` suffix keeps Spotlight
+/// out, so LaunchServices does not register this copy as a second app with
+/// our bundle identifier; only the installed one should be known.
+pub(crate) fn bundle_dir(profile: &str) -> PathBuf {
+    workspace_root()
+        .join("target")
+        .join(profile)
+        .join("bundle.noindex")
+}
+
 /// Build the binary and assemble the .app bundle. Returns the bundle path.
-fn bundle(release: bool) -> Result<PathBuf> {
+pub(crate) fn bundle(release: bool) -> Result<PathBuf> {
     let dict_dir = fetch_data()?;
     let root = workspace_root();
     let profile = if release { "release" } else { "debug" };
@@ -163,7 +176,19 @@ fn bundle(release: bool) -> Result<PathBuf> {
     run(&mut build)?;
 
     let target_dir = root.join("target").join(profile);
-    let app = target_dir.join(APP_NAME);
+    let app = bundle_dir(profile).join(APP_NAME);
+    // Older builds put the bundle next to the binary, where macOS indexes
+    // it and registers a second app with our bundle ID.
+    let legacy = target_dir.join(APP_NAME);
+    if legacy.exists() {
+        let _ = Command::new(install::LSREGISTER)
+            .arg("-u")
+            .arg(&legacy)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+        fs::remove_dir_all(&legacy).map_err(|e| format!("remove {}: {e}", legacy.display()))?;
+    }
     let contents = app.join("Contents");
     let macos = contents.join("MacOS");
     let resources = contents.join("Resources");
@@ -190,6 +215,15 @@ fn bundle(release: bool) -> Result<PathBuf> {
     for f in DATA_FILES {
         copy(&dict_dir.join(f), &dictionary.join(f))?;
     }
+    // Localized names of the bundle and its input mode.
+    for lang in ["zh_TW.lproj", "en.lproj"] {
+        let dir = resources.join(lang);
+        fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+        copy(
+            &src_resources.join(lang).join("InfoPlist.strings"),
+            &dir.join("InfoPlist.strings"),
+        )?;
+    }
 
     // Ad-hoc signature so the bundle's resources are sealed; real Developer ID
     // signing comes in Phase 5.
@@ -203,49 +237,6 @@ fn copy(from: &Path, to: &Path) -> Result {
     fs::copy(from, to)
         .map(|_| ())
         .map_err(|e| format!("copy {} -> {}: {e}", from.display(), to.display()))
-}
-
-fn input_methods_dir() -> Result<PathBuf> {
-    let home = env::var_os("HOME").ok_or("HOME is not set")?;
-    Ok(PathBuf::from(home).join("Library/Input Methods"))
-}
-
-/// Stop the running input method, if any. macOS restarts it on demand.
-fn stop_running() {
-    let _ = Command::new("pkill").args(["-x", EXECUTABLE]).status();
-}
-
-fn install(release: bool) -> Result {
-    let app = bundle(release)?;
-    let dest_dir = input_methods_dir()?;
-    let dest = dest_dir.join(APP_NAME);
-
-    stop_running();
-    fs::create_dir_all(&dest_dir).map_err(|e| format!("create {}: {e}", dest_dir.display()))?;
-    if dest.exists() {
-        fs::remove_dir_all(&dest).map_err(|e| format!("remove {}: {e}", dest.display()))?;
-    }
-    run(Command::new("ditto").arg(&app).arg(&dest))?;
-    println!("installed {}", dest.display());
-
-    run(Command::new(dest.join("Contents/MacOS").join(EXECUTABLE)).arg("--register"))?;
-    println!(
-        "done. Pick 新酷音 from the input menu; if it does not show up yet, log out and back in."
-    );
-    Ok(())
-}
-
-fn uninstall() -> Result {
-    let dest = input_methods_dir()?.join(APP_NAME);
-    stop_running();
-    if dest.exists() {
-        fs::remove_dir_all(&dest).map_err(|e| format!("remove {}: {e}", dest.display()))?;
-        println!("removed {}", dest.display());
-    } else {
-        println!("not installed: {}", dest.display());
-    }
-    println!("the input menu entry disappears after logging out and back in.");
-    Ok(())
 }
 
 fn stream_log() -> Result {

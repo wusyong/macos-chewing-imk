@@ -1,6 +1,7 @@
 # macOS 新酷音（ChewingIMK）
 
 用純 Rust（[objc2](https://github.com/madsmtm/objc2)）透過 InputMethodKit 實作的 macOS 新酷音輸入法，引擎是 [libchewing](https://codeberg.org/chewing/libchewing)。可以用注音打字、選字，單按 Shift 切換中英，有候選窗、輸入法選單和偏好設定視窗。目前是個人專案，只供自己安裝使用。
+
 ## 需求
 
 - macOS 14 Sonoma 以上
@@ -10,18 +11,18 @@
 ## 開發
 
 ```bash
-cargo xtask install   # 編譯、組裝 .app、裝到 ~/Library/Input Methods 並註冊
+cargo xtask install   # 編譯、組裝 .app、裝到 ~/Library/Input Methods 並啟用；已安裝則直接更新
 cargo xtask log       # 即時查看輸入法的 os_log 輸出（另開一個終端機）
 ```
 
-裝好後，從選單列的輸入法選單選「新酷音」。如果清單裡還沒出現，登出再登入一次。
+第一次安裝時，照終端機的提示按「允許」，再到系統設定加入「新酷音」。裝好後從選單列的輸入法選單選「新酷音」。之後更新不會再詢問。
 
 其他指令：
 
 ```bash
 cargo xtask test        # 下載字典並跑測試
-cargo xtask bundle      # 只組裝 target/debug/ChewingIMK.app
-cargo xtask uninstall   # 停止並移除輸入法
+cargo xtask bundle      # 只組裝 target/debug/bundle.noindex/ChewingIMK.app
+cargo xtask uninstall   # 從輸入方式移除並刪除輸入法（加 --purge 連設定與詞庫一起刪）
 ```
 
 每個指令都可以加上 `--release`。
@@ -34,7 +35,7 @@ CI（`.github/workflows/ci.yml`）在 GitHub Actions 上跑 `cargo fmt --check`�
 |---|---|
 | `crates/chewing_imk` | 輸入法行程：`IMKServer`、`ChewingController`、AppKit UI |
 | `crates/chewing_imk_core` | 平台無關的按鍵處理狀態機，不依賴 objc2 |
-| `crates/chewing_imk/resources` | `Info.plist` 範本與選單列圖示 |
+| `crates/chewing_imk/resources` | `Info.plist` 範本、選單列圖示與在地化名稱 |
 | `xtask` | 組裝、安裝、log 等開發指令 |
 
 ## 授權
