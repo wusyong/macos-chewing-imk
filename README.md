@@ -1,6 +1,6 @@
 # macOS 新酷音（ChewingIMK）
 
-用純 Rust（[objc2](https://github.com/madsmtm/objc2)）透過 InputMethodKit 實作的 macOS 新酷音輸入法，引擎是 [libchewing](https://codeberg.org/chewing/libchewing)。目前在 Phase 0：輸入法可以安裝與切換，但還不會打字。進度見 [ROADMAP.md](ROADMAP.md)。
+用純 Rust（[objc2](https://github.com/madsmtm/objc2)）透過 InputMethodKit 實作的 macOS 新酷音輸入法，引擎是 [libchewing](https://codeberg.org/chewing/libchewing)。目前在 Phase 1：可以用注音打字、選字，設定還不能調整。進度見 [ROADMAP.md](ROADMAP.md)。
 
 ## 需求
 
@@ -20,6 +20,7 @@ cargo xtask log       # 即時查看輸入法的 os_log 輸出（另開一個終
 其他指令：
 
 ```bash
+cargo xtask test        # 下載字典並跑測試
 cargo xtask bundle      # 只組裝 target/debug/ChewingIMK.app
 cargo xtask uninstall   # 停止並移除輸入法
 ```

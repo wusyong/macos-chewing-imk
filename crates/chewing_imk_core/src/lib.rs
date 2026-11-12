@@ -4,4 +4,15 @@
 //!
 //! This crate must not depend on objc2 or any Apple framework, so that all of
 //! the key handling rules can be unit tested with a plain `cargo test`.
-//! It is filled in starting from Phase 1 (see ROADMAP.md).
+
+pub mod config;
+mod engine;
+pub mod keymap;
+
+pub use engine::{Action, CandidateList, ChewingCore, Composition, KeyResponse, LangMode};
+
+/// libchewing's default user data directory, shared with `chewing-cli`:
+/// `~/Library/Application Support/im.chewing.Chewing` (or `$CHEWING_USER_PATH`).
+pub fn default_user_dir() -> Option<std::path::PathBuf> {
+    chewing::path::data_dir()
+}

@@ -94,16 +94,23 @@ flowchart LR
 
 ### Phase 1：能打字（MVP）
 
-- [ ] 字典：`cargo xtask` 下載固定版本的 libchewing-data Generic zip、驗證 sha256，解壓到 `Contents/Resources/Dictionary`，以 `Editor::chewing(Some(系統路徑), Some(使用者路徑))` 載入
-- [ ] `chewing_imk_core`：`handle_key` / `handle_modifiers` 狀態機骨架，先移植基本的放行規則（Command、Option、Ctrl、不可列印的按鍵）
-- [ ] 鍵碼轉換：`NSEvent.keyCode`（`kVK_*`）對到 chewing 的 `Keycode`，`charactersIgnoringModifiers` 對到 `Keysym`，再加上 modifier 狀態
-- [ ] 呼叫 `process_keyevent`，依 `EditorKeyBehavior` 決定要不要吞掉按鍵
-- [ ] 組字：`setMarkedText:selectionRange:replacementRange:`，搭配底線屬性與游標位置
-- [ ] 送出：`insertText:replacementRange:`
-- [ ] 候選窗：最陽春的自製 nonactivating `NSPanel`，列出候選字、選字鍵、頁碼，位置從 `attributesForCharacterIndex:lineHeightRectangle:` 取得
-- [ ] 生命週期：在 `activateServer:`、`deactivateServer:`、`commitComposition:` 中處理，切換 app 時送出或清除組字
+- [x] 字典：`cargo xtask fetch-data` 下載固定版本的 libchewing-data Generic zip、驗證 sha256，`bundle` 時複製到 `Contents/Resources/Dictionary`。使用者詞庫用 libchewing 預設的 `~/Library/Application Support/im.chewing.Chewing`，和 `chewing-cli` 共用
+- [x] `chewing_imk_core`：`handle_key` 狀態機，移植 Windows 版 `on_test_keydown` / `on_keydown` 的放行與大小寫規則（快捷鍵與單按 Shift 留到 Phase 2）；`handle_modifiers` 也留到 Phase 2
+- [x] 鍵碼轉換：`NSEvent.keyCode`（`kVK_*`）對到 chewing 的 X11 `Keycode`，`charactersIgnoringModifiers` 對到 `Keysym`，再加上 modifier 狀態。AppKit 功能鍵的私用區字元（U+F700–U+F8FF）不當成可列印字元
+- [x] 呼叫 `process_keyevent`，依 `EditorKeyBehavior` 決定要不要吞掉按鍵
+- [x] 組字：`setMarkedText:selectionRange:replacementRange:`，底線屬性來自 `markForStyle:atRange:`，游標換算成 UTF-16 位置
+- [x] 送出：`insertText:replacementRange:`
+- [x] 候選窗：最陽春的自製 nonactivating `NSPanel`，列出候選字、選字鍵、頁碼，位置從 `attributesForCharacterIndex:lineHeightRectangle:` 取得，下方空間不夠時改放上方
+- [x] 生命週期：`activateServer:` 時要求 client 使用 ABC 鍵盤配置；`deactivateServer:`、`commitComposition:` 時送出已轉換的文字（還沒組成字的注音丟掉）並關閉候選窗
+- [x] `cargo xtask test`：用真字典跑 core 的單元測試（18 個）
 
 完成標準：在 TextEdit、Safari、Terminal 都能打出「新酷音輸入法」並選字，切換 app 時不會留下殘字。
+
+**進度（2026-11-12）**：已在 Claude 桌面 app 的輸入框打出「新酷音輸入法」並用候選窗選字；輸入框靠近螢幕底部時，候選窗會正確改放上方。TextEdit、Safari（網址列）、Terminal 也都手動測過：組字有底線，候選窗出現在正在選的字下方，左緣對齊該字。按 Enter 送出也確認過：第一次 Enter 由輸入法處理並送出文字，第二次 Enter 放行給 app 換行。切換 app 時的送出是從 log 的 `commitComposition` 確認。
+
+**隱私**：libchewing 會在 log 記錄每個按鍵字元（info）和轉換出的詞句（debug），其中 info 會被 oslog 對應到 os_log 會存到磁碟的 Default 等級。`ChewingIMK` 的 logger 現在會擋掉 `chewing::*` 低於 Warn 的訊息。
+
+**測試方式的限制**：用自動化工具（Claude 的電腦操作）送出的按鍵會繞過 macOS 的輸入法系統，新酷音收不到；用 `TISSelectInputSource` 從命令列切換輸入法，前景 app 也不會跟著切到第三方輸入法。所以實機測試目前只能手動進行。
 
 ### Phase 2：行為對齊 Windows 版
 

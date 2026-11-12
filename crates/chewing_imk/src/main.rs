@@ -6,8 +6,11 @@
 //! Run with `--register`, it registers and enables its own bundle as an input
 //! source (used by `cargo xtask install`).
 
+mod candidate_window;
+mod client;
 mod controller;
 mod register;
+mod state;
 
 use std::process::ExitCode;
 
@@ -44,11 +47,43 @@ fn init_logging() {
     } else {
         LevelFilter::Info
     };
-    if let Err(e) = oslog::OsLogger::new(LOG_SUBSYSTEM)
-        .level_filter(level)
-        .init()
-    {
+    // `level_filter` also sets log's global max level.
+    let inner = oslog::OsLogger::new(LOG_SUBSYSTEM).level_filter(level);
+    if let Err(e) = log::set_boxed_logger(Box::new(PrivateLogger(inner))) {
         eprintln!("failed to initialize logging: {e}");
+    }
+}
+
+/// Keeps what the user types out of the system log.
+///
+/// libchewing logs every key with its character (info) and every conversion
+/// with the resulting phrases (debug). oslog maps info to os_log's Default
+/// level, which is persisted to disk. So everything from libchewing below
+/// Warn is dropped.
+struct PrivateLogger(oslog::OsLogger);
+
+impl PrivateLogger {
+    fn is_libchewing(target: &str) -> bool {
+        target == "chewing" || target.starts_with("chewing::")
+    }
+}
+
+impl log::Log for PrivateLogger {
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        if Self::is_libchewing(metadata.target()) && metadata.level() > log::Level::Warn {
+            return false;
+        }
+        self.0.enabled(metadata)
+    }
+
+    fn log(&self, record: &log::Record) {
+        if self.enabled(record.metadata()) {
+            self.0.log(record);
+        }
+    }
+
+    fn flush(&self) {
+        self.0.flush();
     }
 }
 
@@ -104,4 +139,18 @@ fn info_string(bundle: &NSBundle, key: &NSString) -> Option<Retained<NSString>> 
         .objectForInfoDictionaryKey(key)?
         .downcast::<NSString>()
         .ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PrivateLogger;
+
+    #[test]
+    fn only_libchewing_targets_are_filtered() {
+        assert!(PrivateLogger::is_libchewing("chewing"));
+        assert!(PrivateLogger::is_libchewing("chewing::editor"));
+        assert!(PrivateLogger::is_libchewing("chewing::conversion::chewing"));
+        assert!(!PrivateLogger::is_libchewing("chewing_imk_core::engine"));
+        assert!(!PrivateLogger::is_libchewing("ChewingIMK::controller"));
+    }
 }
