@@ -4,6 +4,7 @@
 //! input session (roughly: per text input client). All instances share one
 //! [`ChewingCore`](chewing_imk_core::ChewingCore), see [`crate::state`].
 
+use std::cell::Cell;
 use std::time::Duration;
 
 use chewing::editor::CharacterForm;
@@ -18,6 +19,11 @@ use objc2_foundation::NSUInteger;
 use objc2_input_method_kit::IMKInputController;
 
 use crate::{candidate_window, client, menu, notice_window, prefs, state};
+
+thread_local! {
+    /// Anchor of the candidate window within the current marked text.
+    static LAST_ANCHOR: Cell<usize> = const { Cell::new(0) };
+}
 
 define_class!(
     // SAFETY:
@@ -185,8 +191,10 @@ impl ChewingController {
     /// notice windows are placed last so they can use the caret of the newest
     /// marked text.
     fn apply(&self, client: &AnyObject, actions: Vec<Action>) {
-        // Index (UTF-16) of the character the candidates are for.
-        let mut anchor = 0;
+        // Index (UTF-16) of the character the candidates are for. Moving
+        // the candidate highlight does not touch the marked text, so keep the
+        // anchor from the last composition update.
+        let mut anchor = LAST_ANCHOR.get();
         let mut candidates = None;
         let mut notice = None;
         for action in actions {
@@ -199,6 +207,7 @@ impl ChewingController {
                     let len = composition.text.chars().count();
                     let index = composition.cursor.min(len.saturating_sub(1));
                     anchor = client::utf16_offset(&composition.text, index);
+                    LAST_ANCHOR.set(anchor);
                     client::set_marked_text(self, client, &composition);
                 }
                 Action::ShowCandidates(list) => candidates = Some(list),

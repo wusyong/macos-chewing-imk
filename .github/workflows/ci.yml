@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    # Apple Silicon, like the only supported architecture (ROADMAP #5).
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      # Installs the toolchain pinned in rust-toolchain.toml (with clippy
+      # and rustfmt).
+      - name: Install Rust toolchain
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+
+      # The pinned libchewing-data release; the key changes when xtask
+      # pins a different version.
+      - name: Cache dictionary
+        uses: actions/cache@v4
+        with:
+          path: target/data
+          key: libchewing-data-${{ hashFiles('xtask/src/main.rs') }}
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo xtask test
+
+      # Builds and assembles ChewingIMK.app (ad-hoc signed) to make sure the
+      # bundle step keeps working.
+      - name: Bundle
+        run: cargo xtask bundle --release
