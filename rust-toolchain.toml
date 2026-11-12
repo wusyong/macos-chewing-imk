@@ -1,0 +1,5 @@
+[toolchain]
+# libchewing (chewing 0.14) requires rustc 1.95 or newer.
+channel = "1.99.1"
+components = ["clippy", "rustfmt"]
+targets =["aarch64-apple-darwin", "x86_64-apple-darwin"]

@@ -1,0 +1,107 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+//! ChewingIMK: the macOS input method process.
+//!
+//! Run without arguments, it is started by macOS as the input method server.
+//! Run with `--register`, it registers and enables its own bundle as an input
+//! source (used by `cargo xtask install`).
+
+mod controller;
+mod register;
+
+use std::process::ExitCode;
+
+use log::{LevelFilter, error, info};
+use objc2::rc::Retained;
+use objc2::{AllocAnyThread, ClassType, MainThreadMarker};
+use objc2_app_kit::NSApplication;
+use objc2_foundation::{NSBundle, NSString, ns_string};
+use objc2_input_method_kit::IMKServer;
+
+use crate::controller::ChewingController;
+
+/// os_log subsystem; matches the bundle identifier.
+pub const LOG_SUBSYSTEM: &str = "im.chewing.inputmethod.Chewing";
+
+fn main() -> ExitCode {
+    init_logging();
+
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match args.first().map(String::as_str) {
+        None => run_server(),
+        Some("--register") => register::register_and_enable(),
+        Some(other) => {
+            eprintln!("unknown argument: {other}");
+            eprintln!("usage: ChewingIMK [--register]");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn init_logging() {
+    let level = if cfg!(debug_assertions) {
+        LevelFilter::Debug
+    } else {
+        LevelFilter::Info
+    };
+    if let Err(e) = oslog::OsLogger::new(LOG_SUBSYSTEM)
+        .level_filter(level)
+        .init()
+    {
+        eprintln!("failed to initialize logging: {e}");
+    }
+}
+
+fn run_server() -> ExitCode {
+    let Some(mtm) = MainThreadMarker::new() else {
+        eprintln!("ChewingIMK must run on the main thread");
+        return ExitCode::FAILURE;
+    };
+
+    // IMKServer looks the controller class up by the name in Info.plist
+    // (InputMethodServerControllerClass), so it must be registered with the
+    // Objective-C runtime before the server is created.
+    let _ = ChewingController::class();
+
+    let bundle = NSBundle::mainBundle();
+    let Some(bundle_id) = bundle.bundleIdentifier() else {
+        error!("missing bundle identifier; ChewingIMK must run from its .app bundle");
+        return ExitCode::FAILURE;
+    };
+    let Some(connection_name) = info_string(&bundle, ns_string!("InputMethodConnectionName"))
+    else {
+        error!("missing InputMethodConnectionName in Info.plist");
+        return ExitCode::FAILURE;
+    };
+
+    // SAFETY: both arguments are valid, non-nil NSStrings.
+    let server = unsafe {
+        IMKServer::initWithName_bundleIdentifier(
+            IMKServer::alloc(),
+            Some(&connection_name),
+            Some(&bundle_id),
+        )
+    };
+    let Some(server) = server else {
+        error!("failed to create IMKServer for connection {connection_name}");
+        return ExitCode::FAILURE;
+    };
+    info!(
+        "IMKServer started: bundle={bundle_id} connection={connection_name} version={}",
+        env!("CARGO_PKG_VERSION")
+    );
+
+    let app = NSApplication::sharedApplication(mtm);
+    app.run();
+
+    // Not reached in practice: the process is terminated by the system.
+    drop(server);
+    ExitCode::SUCCESS
+}
+
+fn info_string(bundle: &NSBundle, key: &NSString) -> Option<Retained<NSString>> {
+    bundle
+        .objectForInfoDictionaryKey(key)?
+        .downcast::<NSString>()
+        .ok()
+}

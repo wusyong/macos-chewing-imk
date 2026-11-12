@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- @VERSION@ is filled in by `cargo xtask bundle` from the workspace version. -->
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>zh_TW</string>
+	<key>CFBundleExecutable</key>
+	<string>ChewingIMK</string>
+	<key>CFBundleIdentifier</key>
+	<string>im.chewing.inputmethod.Chewing</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>新酷音</string>
+	<key>CFBundleDisplayName</key>
+	<string>新酷音</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>@VERSION@</string>
+	<key>CFBundleVersion</key>
+	<string>@VERSION@</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<key>LSBackgroundOnly</key>
+	<true/>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+	<key>NSHumanReadableCopyright</key>
+	<string>GPL-3.0-or-later</string>
+
+	<!-- InputMethodKit -->
+	<key>InputMethodConnectionName</key>
+	<string>im.chewing.inputmethod.Chewing_Connection</string>
+	<key>InputMethodServerControllerClass</key>
+	<string>ChewingController</string>
+
+	<!-- Text Input Sources -->
+	<key>TISInputSourceID</key>
+	<string>im.chewing.inputmethod.Chewing</string>
+	<key>TISIntendedLanguage</key>
+	<string>zh-Hant</string>
+	<key>tsInputMethodCharacterRepertoireKey</key>
+	<array>
+		<string>Hant</string>
+		<string>Bopo</string>
+		<string>Latn</string>
+	</array>
+	<key>tsInputMethodIconFileKey</key>
+	<string>MenuIcon.tiff</string>
+	<key>TISIconIsTemplate</key>
+	<true/>
+</dict>
+</plist>
