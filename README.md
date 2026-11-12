@@ -1,6 +1,6 @@
 # macOS 新酷音（ChewingIMK）
 
-用純 Rust（[objc2](https://github.com/madsmtm/objc2)）透過 InputMethodKit 實作的 macOS 新酷音輸入法，引擎是 [libchewing](https://codeberg.org/chewing/libchewing)。目前在 Phase 1：可以用注音打字、選字，設定還不能調整。進度見 [ROADMAP.md](ROADMAP.md)。
+用純 Rust（[objc2](https://github.com/madsmtm/objc2)）透過 InputMethodKit 實作的 macOS 新酷音輸入法，引擎是 [libchewing](https://codeberg.org/chewing/libchewing)。目前在 Phase 2：可以用注音打字、選字，單按 Shift 切換中英，Ctrl+F12 切換簡體輸出；設定還不能調整。進度見 [ROADMAP.md](ROADMAP.md)。
 
 ## 需求
 

@@ -20,3 +20,4 @@ objc2-app-kit = "0.3"
 objc2-foundation = "0.3"
 objc2-input-method-kit = "0.3"
 oslog = "0.2"
+zhconv = { version = "0.4.1", default-features = false, features = ["opencc"] }

@@ -10,13 +10,17 @@
 
 use std::error::Error;
 use std::path::Path;
+use std::time::Duration;
 
+use chewing::editor::zhuyin_layout::KeyboardLayoutCompat;
 use chewing::editor::{BasicEditor, CharacterForm, Editor, EditorKeyBehavior, LanguageMode};
 use chewing::input::keysym::{self, Keysym, SYM_SPACE};
 use chewing::input::{KeyState, KeyboardEvent, keycode};
+use zhconv::{Variant, zhconv};
 
 use crate::config::Config;
-use crate::keymap::KeyInput;
+use crate::keybind::Keybinding;
+use crate::keymap::{KeyInput, KeymapOp, ModifierInput, kvk};
 
 /// Text being composed, shown inline at the insertion point (marked text).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -52,6 +56,8 @@ pub enum Action {
     UpdateComposition(Composition),
     ShowCandidates(CandidateList),
     HideCandidates,
+    /// Briefly show a short message near the insertion point.
+    ShowNotice(String),
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -76,10 +82,38 @@ impl From<LangMode> for LanguageMode {
     }
 }
 
+/// Tracks whether Shift is being tapped on its own. Ported from
+/// windows-chewing-tsf's `ShiftKeyState`; times come from the key events.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShiftKeyState {
+    Up,
+    /// Pressed at this event timestamp, nothing else pressed since.
+    Down(Duration),
+    /// Used as a modifier for another key.
+    Consumed,
+}
+
+impl ShiftKeyState {
+    /// Returns how long Shift was held if it was tapped alone.
+    fn release(&mut self, now: Duration) -> Option<Duration> {
+        let held = match *self {
+            ShiftKeyState::Down(since) => Some(now.saturating_sub(since)),
+            ShiftKeyState::Consumed | ShiftKeyState::Up => None,
+        };
+        *self = ShiftKeyState::Up;
+        held
+    }
+}
+
 pub struct ChewingCore {
     editor: Editor,
     cfg: Config,
     lang_mode: LangMode,
+    kbtype: KeyboardLayoutCompat,
+    keymap: KeymapOp,
+    keybindings: Vec<Keybinding>,
+    shift_state: ShiftKeyState,
+    output_simp_chinese: bool,
     /// Marked text is currently shown in the client.
     has_marked_text: bool,
     /// The candidate window is currently shown.
@@ -106,8 +140,14 @@ impl ChewingCore {
         } else {
             LangMode::Chinese
         };
+        let keybindings = cfg.keybind.iter().filter_map(Keybinding::parse).collect();
         Ok(ChewingCore {
             editor,
+            kbtype: cfg.keyboard_layout,
+            keymap: cfg.keymap(),
+            keybindings,
+            shift_state: ShiftKeyState::Up,
+            output_simp_chinese: cfg.output_simp_chinese,
             cfg,
             lang_mode,
             has_marked_text: false,
@@ -117,6 +157,14 @@ impl ChewingCore {
 
     pub fn lang_mode(&self) -> LangMode {
         self.lang_mode
+    }
+
+    pub fn output_simp_chinese(&self) -> bool {
+        self.output_simp_chinese
+    }
+
+    pub fn character_form(&self) -> CharacterForm {
+        self.editor.editor_options().character_form
     }
 
     /// Whether there is anything on screen that belongs to the input method.
@@ -129,11 +177,216 @@ impl ChewingCore {
         self.editor
             .set_editor_options(|opt| opt.language_mode = lang_mode.into());
 
-        let evt = input.to_keyboard_event();
-        if !self.should_handle(&evt) {
+        let evt = input.to_keyboard_event(self.keymap);
+        // A key pressed while Shift is held: Shift is a modifier this time,
+        // not a tap. (On macOS Shift itself only arrives as a modifier change.)
+        if input.modifiers.shift {
+            self.shift_state = ShiftKeyState::Consumed;
+        }
+
+        let keybinding = self.keybindings.iter().find(|kb| kb.matches(&evt)).cloned();
+        if let Some(kb) = &keybinding
+            && !kb.action.starts_with("selecting_")
+        {
+            return self.run_keybinding(kb);
+        }
+        // Keybindings always belong to us; `selecting_*` ones are handled
+        // with the candidate window (Phase 3) and otherwise act as a key.
+        if keybinding.is_none() && !self.should_handle(&evt) {
             return KeyResponse::default();
         }
         self.process(evt)
+    }
+
+    /// A modifier key changed (`NSEventTypeFlagsChanged`). Implements the
+    /// lone Shift tap and Caps Lock, ported from `on_keyup`. The event is
+    /// never consumed.
+    pub fn handle_modifiers(&mut self, input: &ModifierInput) -> KeyResponse {
+        let mut actions = vec![];
+        let m = input.modifiers;
+        match input.key_code {
+            kvk::SHIFT | kvk::RIGHT_SHIFT if m.shift => {
+                // Shift went down. Only a plain Shift press can become a tap.
+                let plain =
+                    self.cfg.switch_lang_with_shift && !(m.control || m.option || m.command);
+                self.shift_state = match self.shift_state {
+                    ShiftKeyState::Up if plain => ShiftKeyState::Down(input.timestamp),
+                    // Chromium-based clients (Electron apps such as Claude,
+                    // VS Code) deliver every modifier change twice. A repeated
+                    // press is the same press; keep timing from the first.
+                    ShiftKeyState::Down(since) if plain => ShiftKeyState::Down(since),
+                    _ => ShiftKeyState::Consumed,
+                };
+            }
+            kvk::SHIFT | kvk::RIGHT_SHIFT => {
+                let tapped = self
+                    .shift_state
+                    .release(input.timestamp)
+                    .is_some_and(|held| held < self.cfg.shift_key_sensitivity);
+                if tapped && self.cfg.switch_lang_with_shift {
+                    if self.cfg.enable_caps_lock {
+                        // The language mode follows Caps Lock instead.
+                        let msg = match self.lang_mode {
+                            LangMode::English => "CapsLock 鎖定英數模式",
+                            LangMode::Chinese => "CapsLock 鎖定中文模式",
+                        };
+                        self.push_notice(&mut actions, msg);
+                    } else {
+                        self.toggle_lang_mode_into(&mut actions);
+                    }
+                }
+            }
+            kvk::CAPS_LOCK if self.cfg.enable_caps_lock => {
+                actions.extend(self.sync_caps_lock(m.caps_lock));
+                let msg = self.lang_mode_name();
+                self.push_notice(&mut actions, msg);
+            }
+            _ => {
+                // Another modifier while Shift is down: not a lone tap.
+                if m.shift {
+                    self.shift_state = ShiftKeyState::Consumed;
+                }
+            }
+        }
+        KeyResponse {
+            handled: false,
+            actions,
+        }
+    }
+
+    /// With `enable_caps_lock`, the language mode follows the Caps Lock
+    /// state. Call when activated and when Caps Lock changes. Ported from
+    /// `sync_lang_mode`.
+    pub fn sync_caps_lock(&mut self, caps_lock_on: bool) -> Vec<Action> {
+        let mut actions = vec![];
+        if !self.cfg.enable_caps_lock {
+            return actions;
+        }
+        let (locked, unlocked) = if self.cfg.lock_chinese_on_caps_lock {
+            (LangMode::Chinese, LangMode::English)
+        } else {
+            (LangMode::English, LangMode::Chinese)
+        };
+        let mode = if caps_lock_on { locked } else { unlocked };
+        if mode != self.lang_mode {
+            self.lang_mode = mode;
+            self.editor.clear_syllable_editor();
+            self.push_composition(&mut actions);
+        }
+        actions
+    }
+
+    /// Switch between Chinese and English (Shift tap, or the menu).
+    pub fn toggle_lang_mode(&mut self) -> Vec<Action> {
+        let mut actions = vec![];
+        self.toggle_lang_mode_into(&mut actions);
+        actions
+    }
+
+    /// Switch between half and full width (the menu; Shift+Space is handled
+    /// by libchewing when `enable_fullwidth_toggle_key` is set).
+    pub fn toggle_shape_mode(&mut self) {
+        self.editor.set_editor_options(|opt| {
+            opt.character_form = match opt.character_form {
+                CharacterForm::Fullwidth => CharacterForm::Halfwidth,
+                CharacterForm::Halfwidth => CharacterForm::Fullwidth,
+            }
+        });
+    }
+
+    /// Switch simplified Chinese output on or off.
+    pub fn toggle_simplified_chinese(&mut self) -> Vec<Action> {
+        self.output_simp_chinese = !self.output_simp_chinese;
+        let mut actions = vec![];
+        // Re-render what is being composed in the new script.
+        self.push_composition(&mut actions);
+        self.push_candidates(&mut actions);
+        let msg = if self.output_simp_chinese {
+            "簡體中文輸出"
+        } else {
+            "繁體中文輸出"
+        };
+        self.push_notice(&mut actions, msg);
+        actions
+    }
+
+    fn toggle_lang_mode_into(&mut self, actions: &mut Vec<Action>) {
+        self.lang_mode = match self.lang_mode {
+            LangMode::Chinese => LangMode::English,
+            LangMode::English => LangMode::Chinese,
+        };
+        // Drop half-typed bopomofo; converted text stays.
+        self.editor.clear_syllable_editor();
+        self.push_composition(actions);
+        let msg = self.lang_mode_name();
+        self.push_notice(actions, msg);
+    }
+
+    fn lang_mode_name(&self) -> &'static str {
+        match self.lang_mode {
+            LangMode::English => "英數模式",
+            LangMode::Chinese => "中文模式",
+        }
+    }
+
+    fn push_notice(&self, actions: &mut Vec<Action>, msg: &str) {
+        if self.cfg.show_notification {
+            actions.push(Action::ShowNotice(msg.to_owned()));
+        }
+    }
+
+    /// Ported from the keybinding part of `on_keydown`.
+    fn run_keybinding(&mut self, kb: &Keybinding) -> KeyResponse {
+        let mut actions = vec![];
+        match kb.action.as_str() {
+            "toggle_simplified_chinese" => actions = self.toggle_simplified_chinese(),
+            "toggle_hsu_keyboard" => {
+                let (kbtype, msg) = if self.kbtype == KeyboardLayoutCompat::Hsu {
+                    (KeyboardLayoutCompat::Default, "標準鍵盤")
+                } else {
+                    (KeyboardLayoutCompat::Hsu, "許氏鍵盤")
+                };
+                self.kbtype = kbtype;
+                self.keymap = crate::config::keymap_from_kbtype(kbtype);
+                let cfg = Config {
+                    keyboard_layout: kbtype,
+                    ..Config::default()
+                };
+                self.editor.set_syllable_editor(cfg.syllable_editor());
+                self.push_composition(&mut actions);
+                self.push_notice(&mut actions, msg);
+            }
+            "text" => {
+                // Commit what is being composed, then type the text.
+                let mut text = String::new();
+                if !self.editor.is_empty() && self.editor.commit().is_ok() {
+                    text.push_str(self.editor.display_commit());
+                    self.editor.ack();
+                }
+                text.push_str(&kb.param);
+                self.push_candidates(&mut actions);
+                if !text.is_empty() {
+                    actions.push(Action::Commit(self.output(&text)));
+                    self.has_marked_text = false;
+                }
+                self.push_composition(&mut actions);
+            }
+            // Unknown actions swallow the key, like windows-chewing-tsf.
+            _ => {}
+        }
+        KeyResponse {
+            handled: true,
+            actions,
+        }
+    }
+
+    /// Convert output to simplified Chinese if enabled.
+    fn output(&self, text: &str) -> String {
+        if self.output_simp_chinese {
+            zhconv(text, Variant::ZhHans)
+        } else {
+            text.to_owned()
+        }
     }
 
     /// Commit whatever has been converted so far and reset. Called when the
@@ -154,7 +407,7 @@ impl ChewingCore {
         self.editor.clear();
 
         if !text.is_empty() {
-            actions.push(Action::Commit(text));
+            actions.push(Action::Commit(self.output(&text)));
             self.has_marked_text = false;
         } else if self.has_marked_text {
             actions.push(Action::UpdateComposition(Composition::default()));
@@ -175,7 +428,8 @@ impl ChewingCore {
     }
 
     /// Decide whether the key belongs to us at all. Ported from
-    /// `on_test_keydown`; the Shift toggle and keybindings come in Phase 2.
+    /// `on_test_keydown`. The Shift toggle lives in `handle_modifiers`, and
+    /// keybindings are checked before this.
     fn should_handle(&self, evt: &KeyboardEvent) -> bool {
         // macOS: Command shortcuts always belong to the application.
         if evt.is_state_on(KeyState::Super) {
@@ -282,6 +536,12 @@ impl ChewingCore {
         let behavior = self.editor.last_key_behavior();
         let mut actions = vec![];
         self.push_candidates(&mut actions);
+        // Messages from libchewing (e.g. "加入：…" after Ctrl+digit) are
+        // always shown, like windows-chewing-tsf.
+        let notice = self.editor.notification();
+        if !notice.is_empty() {
+            actions.push(Action::ShowNotice(notice.to_owned()));
+        }
 
         if behavior == EditorKeyBehavior::Ignore {
             return KeyResponse {
@@ -295,7 +555,7 @@ impl ChewingCore {
             self.editor.ack();
             if !text.is_empty() {
                 // Inserting text also replaces the marked text.
-                actions.push(Action::Commit(text));
+                actions.push(Action::Commit(self.output(&text)));
                 self.has_marked_text = false;
             }
         }
@@ -362,7 +622,11 @@ impl ChewingCore {
     }
 
     fn push_composition(&mut self, actions: &mut Vec<Action>) {
-        let composition = self.composition();
+        let mut composition = self.composition();
+        if self.output_simp_chinese {
+            composition.text = self.output(&composition.text);
+            composition.cursor = composition.cursor.min(composition.text.chars().count());
+        }
         if !composition.is_empty() {
             actions.push(Action::UpdateComposition(composition));
             self.has_marked_text = true;

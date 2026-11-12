@@ -114,18 +114,45 @@ flowchart LR
 
 ### Phase 2：行為對齊 Windows 版
 
-- [ ] 把 Windows 版 `on_test_keydown` / `on_keydown` 的其餘規則逐條移植到 `chewing_imk_core`，每條規則配一個單元測試
-- [ ] 單按 Shift 切換中英：在 `recognizedEvents:` 加入 `NSEventMaskFlagsChanged`，判斷 Shift 是否單獨按下後放開。Caps Lock 也要處理
-- [ ] 全形／半形，以及用 `zhconv` 做簡繁轉換
-- [ ] 鍵盤配置（`KeyboardLayoutCompat`）與 Dvorak、Colemak 等 keymap
-- [ ] `EditorOptions` 各項：選字鍵、每頁候選數、空白鍵選字、自動學習等
+- [x] 把 Windows 版 `on_test_keydown` / `on_keydown` 的其餘規則移植到 `chewing_imk_core`：快捷鍵（`toggle_simplified_chinese`、`toggle_hsu_keyboard`、`text`）、libchewing 的提示訊息、`auto_commit_threshold = 50`
+- [x] 單按 Shift 切換中英：`recognizedEvents:` 已含 `NSEventMaskFlagsChanged`，用 `NSEvent.timestamp` 計算按住時間（預設 200 ms 內放開才算）。Shift 按住期間有其他按鍵或修飾鍵就不算。Chromium 架構的 app（Electron，例如 Claude、VS Code）每個修飾鍵事件會送兩次，重複的 Shift 按下視為同一次
+- [x] Caps Lock：`enable_caps_lock` 開啟時，中英模式跟著 Caps Lock 狀態；`activateServer:` 時同步一次
+- [x] 全形／半形（`Shift+Space`，由 libchewing 處理；另有 `toggle_shape_mode()` 供 Phase 3 的選單使用），以及用 `zhconv` 做簡體輸出（組字與送出都轉換，候選字維持繁體，與 Windows 版相同）
+- [x] 鍵盤配置（`KeyboardLayoutCompat`）與「模擬英文鍵盤」（Dvorak、Colemak 等 keymap）
+- [x] `EditorOptions` 各項：選字鍵、每頁候選數、空白鍵選字、自動學習等
+- [x] 提示視窗：切換中英、簡繁、鍵盤配置時，在游標附近顯示 0.5 秒（Windows 版的 Notification；原列在 Phase 3，因為切換中英需要回饋而提前）
+- [x] 單元測試：core 共 35 個
+
+**實機測試（2026-11-12）**：Safari、Terminal、TextEdit 的單按 Shift 和簡繁切換都正常。Claude 起初切不了中英，原因是上述重複事件；修正後已重測，log 確認每次 Shift 只切換一次。Phase 2 完成。
 
 完成標準：對照 Windows 版 `ChewingTsfConfig` 的每個欄位，都已經實作，或明確標註不支援。
+
+| 欄位 | 狀態 |
+|---|---|
+| `switch_lang_with_shift`、`shift_key_sensitivity` | 已實作 |
+| `enable_caps_lock`、`lock_chinese_on_caps_lock` | 已實作。macOS 若開了「使用大寫鎖定鍵切換 ABC」，Caps Lock 會先被系統拿走（待決定 #12） |
+| `show_notification` | 已實作 |
+| `enable_fullwidth_toggle_key`、`default_full_space`、`default_english` | 已實作 |
+| `enable_auto_learn`、`auto_learn_user_history`、`auto_learn_new_words` | 已實作 |
+| `esc_clean_all_buf`、`full_shape_symbols`、`upper_case_with_shift` | 已實作 |
+| `add_phrase_forward`、`phrase_choice_rearward`、`auto_wrap_cursor`、`advance_after_selection` | 已實作 |
+| `easy_symbols_with_shift`、`easy_symbols_with_shift_ctrl` | 已實作 |
+| `sort_candidates_by_frequency`、`show_cand_with_space_key`、`cycle_first_n_selects` | 已實作 |
+| `sel_key_type`、`cand_per_page`、`conv_engine` | 已實作 |
+| `output_simp_chinese` | 已實作 |
+| `simulate_english_layout` | 已實作 |
+| `keyboard_layout` | 已實作。但 Dvorak、Colemak、Carpalx、Workman、DvorakHsu 這幾種是以「系統鍵盤配置產生的字元」為準，而我們在 `activateServer:` 要求 client 用 ABC，所以 Phase 4 讀設定時要改成對應的系統配置 |
+| `keybind` | 已實作；`selecting_unlearn_phrase`（`Ctrl+Delete`）要等 Phase 3 的游標選字 |
+| `cursor_cand_list`、`cand_per_row` | Phase 3（候選窗） |
+| `font_size`、`font_family`、`font_*_color`、`cand_list_border_color`、`notify_*_color` | Phase 3（外觀設定） |
+| `modified_timestamp`，以及 `Config` 的 `symbols_dat`、`swkb_dat` | Phase 4（設定檔、自訂符號表） |
+| `sync_lang_mode_openclose` | 不支援：這是 TSF 的鍵盤開關（keyboard open/close）狀態，macOS 沒有對應概念，切換輸入法即可 |
+| `auto_check_update_channel`、`update_info_url`、`last_update_check_time` | 不支援：自動更新不在第一版範圍 |
 
 ### Phase 3：自製 UI
 
 - [ ] 候選窗完善：橫排／直排、字型與大小設定、游標選字（`cursor_cand_list`）、多螢幕邊界、深色模式
-- [ ] 切換中英時的小提示（對應 Windows 版的 Notification）
+- [x] 切換中英時的小提示（對應 Windows 版的 Notification），Phase 2 已先做出基本版
 - [ ] 輸入法選單：由 `menu` 回傳 `NSMenu`，包含中英、全半形、簡繁、偏好設定、關於
 - [ ] 輸入模式圖示（template 圖檔）
 
@@ -227,7 +254,7 @@ macOS 和 Windows 不同、需要另外設計的地方：
 ## 風險與已知坑
 
 - **自製候選窗**：已決定不用 `IMKCandidates`，所以 Phase 1 就要處理 `NSPanel` 不搶焦點、浮在全螢幕 app 之上、座標換算（client 回傳的是螢幕座標，原點在左下）等問題。
-- **App 相容性**：Terminal、Electron 與瀏覽器對 marked text 的處理各有不同，例如 replacementRange 和游標位置。測試矩陣要盡早建立。
+- **App 相容性**：已知 Chromium／Electron app 會把每個修飾鍵事件（`flagsChanged`）送兩次，相隔約 2–4 ms。Terminal、Electron 與瀏覽器對 marked text 的處理各有不同，例如 replacementRange 和游標位置。測試矩陣要盡早建立。
 - **Secure Input**：密碼欄位，或啟用 Secure Keyboard Entry 的 Terminal，會讓輸入法收不到按鍵。這是系統行為，不是 bug。
 - **開發迴圈**：每次改完都要重新安裝並 kill 掉行程，有時還得重新登入才會生效。Phase 0 就要把 `cargo xtask install` 做到一個指令完成。
 - **objc2 子類別**：`define_class!` 的 ivar 與 `Retained` 生命週期要小心；IMK 透過 ObjC runtime 用類別名稱建立 controller，名稱打錯不會在編譯時報錯。

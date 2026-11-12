@@ -9,6 +9,8 @@
 mod candidate_window;
 mod client;
 mod controller;
+mod notice_window;
+mod panel;
 mod register;
 mod state;
 

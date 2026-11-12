@@ -4,8 +4,10 @@
 //! input session (roughly: per text input client). All instances share one
 //! [`ChewingCore`](chewing_imk_core::ChewingCore), see [`crate::state`].
 
+use std::time::Duration;
+
 use chewing_imk_core::Action;
-use chewing_imk_core::keymap::{KeyInput, Modifiers};
+use chewing_imk_core::keymap::{KeyInput, ModifierInput, Modifiers};
 use log::{debug, warn};
 use objc2::runtime::AnyObject;
 use objc2::{MainThreadMarker, define_class, msg_send};
@@ -13,7 +15,7 @@ use objc2_app_kit::{NSEvent, NSEventMask, NSEventModifierFlags, NSEventType};
 use objc2_foundation::NSUInteger;
 use objc2_input_method_kit::IMKInputController;
 
-use crate::{candidate_window, client, state};
+use crate::{candidate_window, client, notice_window, state};
 
 /// Keyboard layout requested from the client while we are active, so
 /// physical keys produce QWERTY characters whatever layout the user picked
@@ -31,8 +33,8 @@ define_class!(
     pub struct ChewingController;
 
     impl ChewingController {
-        /// Which events are delivered to `handleEvent:client:`. FlagsChanged is
-        /// needed later to detect a lone Shift press (switching Chinese/English).
+        /// Which events are delivered to `handleEvent:client:`. FlagsChanged
+        /// detects a lone Shift tap (switching Chinese/English) and Caps Lock.
         #[unsafe(method(recognizedEvents:))]
         fn recognized_events(&self, _sender: Option<&AnyObject>) -> NSUInteger {
             (NSEventMask::KeyDown | NSEventMask::FlagsChanged).0 as NSUInteger
@@ -49,6 +51,13 @@ define_class!(
             debug!("activateServer");
             if let Some(client) = sender {
                 client::override_keyboard(client, BASE_KEYBOARD_LAYOUT);
+                // Caps Lock may have changed while another input source was
+                // active.
+                let caps_lock =
+                    NSEvent::modifierFlags_class().contains(NSEventModifierFlags::CapsLock);
+                if let Some(actions) = state::with_core(|core| core.sync_caps_lock(caps_lock)) {
+                    self.apply(client, actions);
+                }
             }
             // SAFETY: forwarding the same argument to the superclass.
             let _: () = unsafe { msg_send![super(self), activateServer: sender] };
@@ -78,17 +87,23 @@ impl ChewingController {
         let (Some(event), Some(client)) = (event, sender) else {
             return false;
         };
-        if event.r#type() != NSEventType::KeyDown {
-            // FlagsChanged: the Shift toggle comes in Phase 2.
-            return false;
-        }
-        let input = key_input(event);
-        let Some(resp) = state::with_core(|core| core.handle_key(&input)) else {
+        let ty = event.r#type();
+        let resp = if ty == NSEventType::KeyDown {
+            let input = key_input(event);
+            state::with_core(|core| core.handle_key(&input))
+        } else if ty == NSEventType::FlagsChanged {
+            let input = modifier_input(event);
+            state::with_core(|core| core.handle_modifiers(&input))
+        } else {
+            None
+        };
+        let Some(resp) = resp else {
             return false;
         };
         debug!(
-            "keyDown keyCode={:#x} handled={} actions={}",
-            input.key_code,
+            "event type={} keyCode={:#x} handled={} actions={}",
+            ty.0,
+            event.keyCode(),
             resp.handled,
             resp.actions.len()
         );
@@ -111,13 +126,14 @@ impl ChewingController {
         }
     }
 
-    /// Carry out the core's actions on `client`, in order. The candidate
-    /// window is placed last so it can use the caret of the newest marked
-    /// text.
+    /// Carry out the core's actions on `client`, in order. The candidate and
+    /// notice windows are placed last so they can use the caret of the newest
+    /// marked text.
     fn apply(&self, client: &AnyObject, actions: Vec<Action>) {
         // Index (UTF-16) of the character the candidates are for.
         let mut anchor = 0;
         let mut candidates = None;
+        let mut notice = None;
         for action in actions {
             match action {
                 Action::Commit(text) => client::insert_text(client, &text),
@@ -135,21 +151,47 @@ impl ChewingController {
                     candidates = None;
                     candidate_window::hide();
                 }
+                Action::ShowNotice(message) => notice = Some(message),
             }
         }
+        if candidates.is_none() && notice.is_none() {
+            return;
+        }
+        let Some(mtm) = MainThreadMarker::new() else {
+            warn!("window requested off the main thread");
+            return;
+        };
+        let line = client::line_rect(client, anchor);
         if let Some(list) = candidates {
-            let Some(mtm) = MainThreadMarker::new() else {
-                warn!("candidate window requested off the main thread");
-                return;
-            };
-            let line = client::line_rect(client, anchor);
             candidate_window::show(mtm, &list, line);
+        }
+        if let Some(message) = notice {
+            notice_window::show(mtm, &message, line);
         }
     }
 }
 
+fn modifiers(flags: NSEventModifierFlags) -> Modifiers {
+    Modifiers {
+        shift: flags.contains(NSEventModifierFlags::Shift),
+        control: flags.contains(NSEventModifierFlags::Control),
+        option: flags.contains(NSEventModifierFlags::Option),
+        command: flags.contains(NSEventModifierFlags::Command),
+        caps_lock: flags.contains(NSEventModifierFlags::CapsLock),
+    }
+}
+
+fn modifier_input(event: &NSEvent) -> ModifierInput {
+    ModifierInput {
+        key_code: event.keyCode(),
+        modifiers: modifiers(event.modifierFlags()),
+        // Seconds since system startup; negative or NaN would be a bug in
+        // AppKit, clamp rather than panic.
+        timestamp: Duration::from_secs_f64(event.timestamp().max(0.0)),
+    }
+}
+
 fn key_input(event: &NSEvent) -> KeyInput {
-    let flags = event.modifierFlags();
     // `charactersIgnoringModifiers` applies Shift but not Control/Option/
     // Command, like windows-chewing-tsf's ToAscii call without Ctrl.
     let text = event
@@ -158,12 +200,6 @@ fn key_input(event: &NSEvent) -> KeyInput {
     KeyInput {
         key_code: event.keyCode(),
         text,
-        modifiers: Modifiers {
-            shift: flags.contains(NSEventModifierFlags::Shift),
-            control: flags.contains(NSEventModifierFlags::Control),
-            option: flags.contains(NSEventModifierFlags::Option),
-            command: flags.contains(NSEventModifierFlags::Command),
-            caps_lock: flags.contains(NSEventModifierFlags::CapsLock),
-        },
+        modifiers: modifiers(event.modifierFlags()),
     }
 }

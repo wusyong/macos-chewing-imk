@@ -1,13 +1,19 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Input method settings. Field names and defaults follow windows-chewing-tsf's
-//! `ChewingTsfConfig` so behavior matches; only the fields used so far are
-//! here. Loading from disk comes in Phase 4.
+//! `ChewingTsfConfig` so behavior matches. Display settings (fonts, colors,
+//! candidate layout) are added with the UI in Phase 3; loading from disk
+//! comes in Phase 4.
+
+use std::time::Duration;
 
 use chewing::editor::zhuyin_layout::{
     DaiChien26, Et, Et26, GinYieh, Hsu, Ibm, KeyboardLayoutCompat, Pinyin, Standard, SyllableEditor,
 };
 use chewing::editor::{CharacterForm, ConversionEngineKind, EditorOptions, UserPhraseAddDirection};
+
+use crate::keybind::KeybindValue;
+use crate::keymap::{KeymapOp, SimulatedKeyboard};
 
 /// Selection key sets, indexed by [`Config::sel_key_type`].
 pub const SEL_KEYS: [&str; 6] = [
@@ -21,6 +27,10 @@ pub const SEL_KEYS: [&str; 6] = [
 
 #[derive(Debug, Clone)]
 pub struct Config {
+    /// Tap Shift alone to switch between Chinese and English.
+    pub switch_lang_with_shift: bool,
+    /// A Shift tap must be released within this time to count.
+    pub shift_key_sensitivity: Duration,
     pub enable_caps_lock: bool,
     pub lock_chinese_on_caps_lock: bool,
     pub enable_auto_learn: bool,
@@ -46,11 +56,17 @@ pub struct Config {
     pub conv_engine: u8,
     pub cand_per_page: usize,
     pub keyboard_layout: KeyboardLayoutCompat,
+    pub simulate_english_layout: SimulatedKeyboard,
+    pub show_notification: bool,
+    pub output_simp_chinese: bool,
+    pub keybind: Vec<KeybindValue>,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
+            switch_lang_with_shift: true,
+            shift_key_sensitivity: Duration::from_millis(200),
             enable_caps_lock: false,
             lock_chinese_on_caps_lock: true,
             enable_auto_learn: true,
@@ -75,6 +91,13 @@ impl Default for Config {
             conv_engine: 1,
             cand_per_page: 9,
             keyboard_layout: KeyboardLayoutCompat::Default,
+            simulate_english_layout: SimulatedKeyboard::Qwerty,
+            show_notification: true,
+            output_simp_chinese: false,
+            keybind: vec![
+                KeybindValue::new("Ctrl+F12", "toggle_simplified_chinese", ""),
+                KeybindValue::new("Ctrl+Delete", "selecting_unlearn_phrase", ""),
+            ],
         }
     }
 }
@@ -85,6 +108,15 @@ impl Config {
             .get(self.sel_key_type)
             .copied()
             .unwrap_or(SEL_KEYS[0])
+    }
+
+    /// How keys are reinterpreted for the configured layouts. Ported from
+    /// `keymap_from_kbtype` and `apply_runtime_config`.
+    pub(crate) fn keymap(&self) -> KeymapOp {
+        if self.simulate_english_layout != SimulatedKeyboard::Qwerty {
+            return self.simulate_english_layout.into();
+        }
+        keymap_from_kbtype(self.keyboard_layout)
     }
 
     /// Apply the settings to libchewing's editor options. Ported from
@@ -114,11 +146,13 @@ impl Config {
             2 => ConversionEngineKind::FuzzyChewingEngine,
             _ => ConversionEngineKind::ChewingEngine,
         };
+        // From `apply_init_config`.
         opt.character_form = if self.default_full_space {
             CharacterForm::Fullwidth
         } else {
             CharacterForm::Halfwidth
         };
+        opt.auto_commit_threshold = 50;
     }
 
     /// Ported from windows-chewing-tsf's `syl_editor_from_kbtype`.
@@ -142,5 +176,22 @@ impl Config {
             K::ThlPinyin => Box::new(Pinyin::thl()),
             K::Mps2Pinyin => Box::new(Pinyin::mps2()),
         }
+    }
+}
+
+/// Ported from windows-chewing-tsf's `keymap_from_kbtype`. These layouts are
+/// defined relative to the characters a non-QWERTY system layout produces.
+pub(crate) fn keymap_from_kbtype(kbtype: KeyboardLayoutCompat) -> KeymapOp {
+    use KeyboardLayoutCompat as K;
+    use chewing::input::keymap::*;
+    match kbtype {
+        K::Dvorak => KeymapOp::Ksym(&INVERTED_DVORAK_MAP),
+        K::DvorakHsu => KeymapOp::Ksym(&DVORAK_MAP),
+        K::Carpalx => KeymapOp::Ksym(&INVERTED_QGMLWY_MAP),
+        K::ColemakDhAnsi => KeymapOp::Ksym(&INVERTED_COLEMAK_DH_ANSI_MAP),
+        K::ColemakDhOrth => KeymapOp::Ksym(&INVERTED_COLEMAK_DH_ORTH_MAP),
+        K::Workman => KeymapOp::Ksym(&INVERTED_WORKMAN_MAP),
+        K::Colemak => KeymapOp::Ksym(&INVERTED_COLEMAK_MAP),
+        _ => KeymapOp::None,
     }
 }

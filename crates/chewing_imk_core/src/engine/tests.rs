@@ -7,7 +7,8 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::*;
-use crate::keymap::{Modifiers, kvk};
+use crate::keybind::KeybindValue;
+use crate::keymap::{ModifierInput, Modifiers, kvk};
 
 fn dict_dir() -> PathBuf {
     if let Some(dir) = std::env::var_os("CHEWING_TEST_DATA_DIR") {
@@ -44,13 +45,20 @@ fn user_dir() -> PathBuf {
 }
 
 fn core() -> ChewingCore {
-    ChewingCore::new(&dict_dir(), Some(&user_dir()), Config::default()).unwrap()
+    core_with(Config::default())
+}
+
+fn core_with(cfg: Config) -> ChewingCore {
+    ChewingCore::new(&dict_dir(), Some(&user_dir()), cfg).unwrap()
 }
 
 fn kvk_for(c: char) -> u16 {
     match c.to_ascii_lowercase() {
         'a' => kvk::ANSI_A,
+        'b' => kvk::ANSI_B,
         'c' => kvk::ANSI_C,
+        'g' => kvk::ANSI_G,
+        'z' => kvk::ANSI_Z,
         'j' => kvk::ANSI_J,
         'l' => kvk::ANSI_L,
         's' => kvk::ANSI_S,
@@ -58,6 +66,8 @@ fn kvk_for(c: char) -> u16 {
         '1' => kvk::ANSI_1,
         '2' => kvk::ANSI_2,
         '3' => kvk::ANSI_3,
+        '4' => kvk::ANSI_4,
+        '8' => kvk::ANSI_8,
         ' ' => kvk::SPACE,
         other => panic!("add {other:?} to kvk_for"),
     }
@@ -292,4 +302,277 @@ fn commit_composition_with_only_bopomofo_clears_marked_text() {
     core.handle_key(&key('s'));
     let actions = core.commit_composition();
     assert_eq!(actions, [Action::UpdateComposition(Composition::default())]);
+}
+
+// ---- Phase 2: Shift tap, Caps Lock, keybindings, simplified output ----
+
+fn modifier(key_code: u16, modifiers: Modifiers, ms: u64) -> ModifierInput {
+    ModifierInput {
+        key_code,
+        modifiers,
+        timestamp: Duration::from_millis(ms),
+    }
+}
+
+const SHIFT: Modifiers = Modifiers {
+    shift: true,
+    control: false,
+    option: false,
+    command: false,
+    caps_lock: false,
+};
+
+/// Press Shift at `down_ms` and release it at `up_ms`.
+fn tap_shift(core: &mut ChewingCore, down_ms: u64, up_ms: u64) -> KeyResponse {
+    let down = core.handle_modifiers(&modifier(kvk::SHIFT, SHIFT, down_ms));
+    assert_eq!(down, KeyResponse::default());
+    core.handle_modifiers(&modifier(kvk::SHIFT, Modifiers::default(), up_ms))
+}
+
+fn notices(actions: &[Action]) -> Vec<&str> {
+    actions
+        .iter()
+        .filter_map(|a| match a {
+            Action::ShowNotice(n) => Some(n.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn shift_tap_switches_language() {
+    let mut core = core();
+    let resp = tap_shift(&mut core, 1000, 1100);
+    assert!(!resp.handled, "modifier changes are never consumed");
+    assert_eq!(notices(&resp.actions), ["英數模式"]);
+    assert_eq!(core.lang_mode(), LangMode::English);
+    // English + half width: letters go straight to the application.
+    assert_eq!(core.handle_key(&key('a')), KeyResponse::default());
+
+    let resp = tap_shift(&mut core, 2000, 2050);
+    assert_eq!(notices(&resp.actions), ["中文模式"]);
+    assert_eq!(core.lang_mode(), LangMode::Chinese);
+}
+
+#[test]
+fn slow_shift_press_does_not_switch() {
+    let mut core = core();
+    let resp = tap_shift(&mut core, 1000, 1300);
+    assert!(resp.actions.is_empty());
+    assert_eq!(core.lang_mode(), LangMode::Chinese);
+}
+
+#[test]
+fn shift_used_as_modifier_does_not_switch() {
+    let mut core = core();
+    core.handle_modifiers(&modifier(kvk::SHIFT, SHIFT, 1000));
+    core.handle_key(&key_with('A', SHIFT));
+    let resp = core.handle_modifiers(&modifier(kvk::SHIFT, Modifiers::default(), 1050));
+    assert!(resp.actions.is_empty());
+    assert_eq!(core.lang_mode(), LangMode::Chinese);
+
+    // Shift pressed together with Command (e.g. Cmd+Shift+4).
+    let cmd_shift = Modifiers {
+        command: true,
+        ..SHIFT
+    };
+    core.handle_modifiers(&modifier(kvk::SHIFT, cmd_shift, 2000));
+    let resp = core.handle_modifiers(&modifier(
+        kvk::SHIFT,
+        Modifiers {
+            command: true,
+            ..Default::default()
+        },
+        2050,
+    ));
+    assert!(resp.actions.is_empty());
+
+    // Command pressed while Shift is held.
+    core.handle_modifiers(&modifier(kvk::SHIFT, SHIFT, 3000));
+    core.handle_modifiers(&modifier(kvk::COMMAND, cmd_shift, 3010));
+    core.handle_modifiers(&modifier(kvk::COMMAND, SHIFT, 3020));
+    let resp = core.handle_modifiers(&modifier(kvk::SHIFT, Modifiers::default(), 3050));
+    assert!(resp.actions.is_empty());
+    assert_eq!(core.lang_mode(), LangMode::Chinese);
+}
+
+#[test]
+fn shift_tap_can_be_disabled() {
+    let mut core = core_with(Config {
+        switch_lang_with_shift: false,
+        ..Config::default()
+    });
+    assert!(tap_shift(&mut core, 1000, 1050).actions.is_empty());
+    assert_eq!(core.lang_mode(), LangMode::Chinese);
+}
+
+#[test]
+fn switching_language_drops_bopomofo_but_keeps_text() {
+    let mut core = core();
+    type_str(&mut core, "su3c");
+    let resp = tap_shift(&mut core, 1000, 1050);
+    assert_eq!(last_composition(&resp).unwrap().text, "你");
+    // Typing English continues the same composition.
+    let resp = core.handle_key(&key('a'));
+    assert!(resp.handled);
+    assert_eq!(last_composition(&resp).unwrap().text, "你a");
+}
+
+#[test]
+fn notices_can_be_turned_off() {
+    let mut core = core_with(Config {
+        show_notification: false,
+        ..Config::default()
+    });
+    assert!(tap_shift(&mut core, 1000, 1050).actions.is_empty());
+    assert_eq!(core.lang_mode(), LangMode::English);
+}
+
+#[test]
+fn caps_lock_controls_language_when_enabled() {
+    let mut core = core_with(Config {
+        enable_caps_lock: true,
+        ..Config::default()
+    });
+    // lock_chinese_on_caps_lock (default): Caps Lock on = Chinese.
+    core.sync_caps_lock(false);
+    assert_eq!(core.lang_mode(), LangMode::English);
+
+    let caps = Modifiers {
+        caps_lock: true,
+        ..Default::default()
+    };
+    let resp = core.handle_modifiers(&modifier(kvk::CAPS_LOCK, caps, 1000));
+    assert_eq!(core.lang_mode(), LangMode::Chinese);
+    assert_eq!(notices(&resp.actions), ["中文模式"]);
+
+    // A Shift tap only explains why nothing changes.
+    let resp = tap_shift(&mut core, 2000, 2050);
+    assert_eq!(notices(&resp.actions), ["CapsLock 鎖定中文模式"]);
+    assert_eq!(core.lang_mode(), LangMode::Chinese);
+}
+
+#[test]
+fn caps_lock_is_ignored_by_default() {
+    let mut core = core();
+    let caps = Modifiers {
+        caps_lock: true,
+        ..Default::default()
+    };
+    assert!(core.sync_caps_lock(false).is_empty());
+    let resp = core.handle_modifiers(&modifier(kvk::CAPS_LOCK, caps, 1000));
+    assert!(resp.actions.is_empty());
+    assert_eq!(core.lang_mode(), LangMode::Chinese);
+}
+
+#[test]
+fn ctrl_f12_toggles_simplified_output() {
+    let mut core = core();
+    let ctrl_f12 = KeyInput {
+        key_code: kvk::F12,
+        text: None,
+        modifiers: Modifiers {
+            control: true,
+            ..Default::default()
+        },
+    };
+    let resp = core.handle_key(&ctrl_f12);
+    assert!(resp.handled);
+    assert_eq!(notices(&resp.actions), ["簡體中文輸出"]);
+    assert!(core.output_simp_chinese());
+
+    // ㄕㄨ ㄖㄨˋ ㄈㄚˇ = 輸入法
+    let resps = type_str(&mut core, "gj bj4z83");
+    assert_eq!(
+        last_composition(resps.last().unwrap()).unwrap().text,
+        "输入法"
+    );
+    let resp = core.handle_key(&special(kvk::RETURN));
+    assert_eq!(commits(&resp), ["输入法"]);
+
+    let resp = core.handle_key(&ctrl_f12);
+    assert_eq!(notices(&resp.actions), ["繁體中文輸出"]);
+    assert!(!core.output_simp_chinese());
+}
+
+#[test]
+fn text_keybinding_commits_then_types() {
+    let mut core = core_with(Config {
+        keybind: vec![KeybindValue::new("Ctrl+Shift+A", "text", "!?")],
+        ..Config::default()
+    });
+    type_str(&mut core, "su3");
+    let ctrl_shift = Modifiers {
+        control: true,
+        ..SHIFT
+    };
+    let resp = core.handle_key(&key_with('A', ctrl_shift));
+    assert!(resp.handled);
+    assert_eq!(commits(&resp), ["你!?"]);
+    assert!(!core.is_composing());
+}
+
+#[test]
+fn hsu_keybinding_switches_layout() {
+    let mut core = core_with(Config {
+        keybind: vec![KeybindValue::new("Ctrl+F11", "toggle_hsu_keyboard", "")],
+        ..Config::default()
+    });
+    let ctrl_f11 = KeyInput {
+        key_code: kvk::F11,
+        text: None,
+        modifiers: Modifiers {
+            control: true,
+            ..Default::default()
+        },
+    };
+    let resp = core.handle_key(&ctrl_f11);
+    assert_eq!(notices(&resp.actions), ["許氏鍵盤"]);
+    // In the Hsu layout "n" is ㄋ.
+    let resp = core.handle_key(&KeyInput {
+        key_code: kvk::ANSI_N,
+        text: Some('n'),
+        modifiers: Modifiers::default(),
+    });
+    assert_eq!(last_composition(&resp).unwrap().text, "ㄋ");
+
+    let resp = core.handle_key(&ctrl_f11);
+    assert_eq!(notices(&resp.actions), ["標準鍵盤"]);
+}
+
+#[test]
+fn libchewing_notifications_are_shown() {
+    // Ctrl+2 after two syllables adds them as a user phrase.
+    let mut core = core();
+    type_str(&mut core, "su3cl3");
+    let control = Modifiers {
+        control: true,
+        ..Default::default()
+    };
+    let resp = core.handle_key(&key_with('2', control));
+    let shown = notices(&resp.actions);
+    assert_eq!(shown.len(), 1, "{:?}", resp.actions);
+    assert!(shown[0].contains("你好"), "{shown:?}");
+}
+
+#[test]
+fn duplicated_modifier_events_still_toggle_once() {
+    // Chromium-based apps (Claude, VS Code) deliver each modifier change
+    // twice, a few milliseconds apart.
+    let mut core = core();
+    let up = Modifiers::default();
+    core.handle_modifiers(&modifier(kvk::SHIFT, SHIFT, 6580));
+    core.handle_modifiers(&modifier(kvk::SHIFT, SHIFT, 6584));
+    let first = core.handle_modifiers(&modifier(kvk::SHIFT, up, 6747));
+    let second = core.handle_modifiers(&modifier(kvk::SHIFT, up, 6749));
+    assert_eq!(notices(&first.actions), ["英數模式"]);
+    assert!(second.actions.is_empty());
+    assert_eq!(core.lang_mode(), LangMode::English);
+
+    // A duplicated slow press still does not count.
+    core.handle_modifiers(&modifier(kvk::SHIFT, SHIFT, 10_000));
+    core.handle_modifiers(&modifier(kvk::SHIFT, SHIFT, 10_150));
+    let resp = core.handle_modifiers(&modifier(kvk::SHIFT, up, 10_250));
+    assert!(resp.actions.is_empty());
+    assert_eq!(core.lang_mode(), LangMode::English);
 }

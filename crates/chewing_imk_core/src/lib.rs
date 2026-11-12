@@ -7,6 +7,7 @@
 
 pub mod config;
 mod engine;
+pub mod keybind;
 pub mod keymap;
 
 pub use engine::{Action, CandidateList, ChewingCore, Composition, KeyResponse, LangMode};

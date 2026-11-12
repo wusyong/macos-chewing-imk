@@ -10,6 +10,7 @@
 
 use chewing::input::KeyboardEvent;
 use chewing::input::keycode::{self, Keycode};
+use chewing::input::keymap::{Keymap, map_ascii, map_keycode};
 use chewing::input::keysym::{self, Keysym};
 
 /// Modifier state of a key event, independent of AppKit.
@@ -31,6 +32,17 @@ pub struct KeyInput {
     /// First character of `NSEvent.charactersIgnoringModifiers`, if any.
     pub text: Option<char>,
     pub modifiers: Modifiers,
+}
+
+/// A modifier key change as delivered by macOS (`NSEventTypeFlagsChanged`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ModifierInput {
+    /// The modifier key that changed (`kvk::SHIFT`, `kvk::CAPS_LOCK`, ...).
+    pub key_code: u16,
+    /// The modifier state after the change.
+    pub modifiers: Modifiers,
+    /// `NSEvent.timestamp`: time since system startup.
+    pub timestamp: std::time::Duration,
 }
 
 /// macOS virtual keycodes (HIToolbox `kVK_*`) used in this module.
@@ -319,14 +331,83 @@ fn lookup<T: Copy>(table: &[(u16, T)], key_code: u16) -> Option<T> {
         .map(|i| table[i].1)
 }
 
+/// How to reinterpret a key for alternative keyboard layouts. Ported from
+/// windows-chewing-tsf's `KeymapOp`.
+#[derive(Debug, Default, Clone, Copy)]
+pub enum KeymapOp {
+    #[default]
+    None,
+    /// Look up the physical key: types as if the keyboard had this layout
+    /// ("simulate English layout").
+    Code(&'static Keymap),
+    /// Look up the produced character: for zhuyin layouts defined on top of
+    /// a non-QWERTY system layout (Dvorak, Colemak, ...).
+    Ksym(&'static Keymap),
+}
+
+/// English layouts that can be simulated on a QWERTY keyboard, by
+/// windows-chewing-tsf's `simulate_english_layout` number.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum SimulatedKeyboard {
+    #[default]
+    Qwerty,
+    Dvorak,
+    Qgmlwy,
+    Colemak,
+    ColemakDhAnsi,
+    ColemakDhOrth,
+    Workman,
+}
+
+impl From<i32> for SimulatedKeyboard {
+    fn from(value: i32) -> Self {
+        match value {
+            1 => SimulatedKeyboard::Dvorak,
+            2 => SimulatedKeyboard::Qgmlwy,
+            3 => SimulatedKeyboard::Colemak,
+            4 => SimulatedKeyboard::ColemakDhAnsi,
+            5 => SimulatedKeyboard::ColemakDhOrth,
+            6 => SimulatedKeyboard::Workman,
+            _ => SimulatedKeyboard::Qwerty,
+        }
+    }
+}
+
+impl From<SimulatedKeyboard> for KeymapOp {
+    fn from(value: SimulatedKeyboard) -> Self {
+        use chewing::input::keymap::*;
+        match value {
+            SimulatedKeyboard::Qwerty => KeymapOp::None,
+            SimulatedKeyboard::Dvorak => KeymapOp::Code(&INVERTED_DVORAK_MAP),
+            SimulatedKeyboard::Qgmlwy => KeymapOp::Code(&INVERTED_QGMLWY_MAP),
+            SimulatedKeyboard::Colemak => KeymapOp::Code(&INVERTED_COLEMAK_MAP),
+            SimulatedKeyboard::ColemakDhAnsi => KeymapOp::Code(&INVERTED_COLEMAK_DH_ANSI_MAP),
+            SimulatedKeyboard::ColemakDhOrth => KeymapOp::Code(&INVERTED_COLEMAK_DH_ORTH_MAP),
+            SimulatedKeyboard::Workman => KeymapOp::Code(&INVERTED_WORKMAN_MAP),
+        }
+    }
+}
+
 impl KeyInput {
     /// Convert to a libchewing keyboard event.
-    pub fn to_keyboard_event(&self) -> KeyboardEvent {
-        let code = lookup(KEYCODE_MAP, self.key_code).unwrap_or_default();
-        let ksym = lookup(KEYSYM_MAP, self.key_code)
+    pub fn to_keyboard_event(&self, keymap: KeymapOp) -> KeyboardEvent {
+        let mut code = lookup(KEYCODE_MAP, self.key_code).unwrap_or_default();
+        let mut ksym = lookup(KEYSYM_MAP, self.key_code)
             .or_else(|| self.text.filter(|&c| is_printable(c)).map(Keysym::from))
             .unwrap_or(keysym::SYM_NONE);
         let m = self.modifiers;
+        let mapped = match keymap {
+            KeymapOp::None => None,
+            KeymapOp::Ksym(keymap) => self
+                .text
+                .filter(char::is_ascii)
+                .map(|c| map_ascii(keymap, c as u8)),
+            KeymapOp::Code(keymap) => Some(map_keycode(keymap, code, m.shift)),
+        };
+        if let Some(mapped) = mapped.filter(|e| !e.is_invalid()) {
+            code = mapped.code;
+            ksym = mapped.ksym;
+        }
         KeyboardEvent::builder()
             .code(code)
             .ksym(ksym)
@@ -357,7 +438,7 @@ mod tests {
             text: Some('j'),
             modifiers: Modifiers::default(),
         }
-        .to_keyboard_event();
+        .to_keyboard_event(KeymapOp::None);
         assert_eq!(evt.code, keycode::KEY_J);
         assert_eq!(evt.ksym, keysym::SYM_LOWER_J);
     }
@@ -372,7 +453,7 @@ mod tests {
                 ..Default::default()
             },
         }
-        .to_keyboard_event();
+        .to_keyboard_event(KeymapOp::None);
         assert_eq!(evt.code, keycode::KEY_1);
         assert_eq!(evt.ksym, Keysym::from('!'));
         assert!(evt.is_state_on(KeyState::Shift));
@@ -385,7 +466,7 @@ mod tests {
             text: Some('\u{7f}'),
             modifiers: Modifiers::default(),
         }
-        .to_keyboard_event();
+        .to_keyboard_event(KeymapOp::None);
         assert_eq!(evt.code, keycode::KEY_BACKSPACE);
         assert_eq!(evt.ksym, keysym::SYM_BACKSPACE);
 
@@ -394,7 +475,7 @@ mod tests {
             text: Some('7'),
             modifiers: Modifiers::default(),
         }
-        .to_keyboard_event();
+        .to_keyboard_event(KeymapOp::None);
         assert_eq!(evt.code, keycode::KEY_KP7);
         assert_eq!(evt.ksym, keysym::SYM_KP7);
     }
@@ -406,9 +487,21 @@ mod tests {
             text: Some('\u{f714}'),
             modifiers: Modifiers::default(),
         }
-        .to_keyboard_event();
+        .to_keyboard_event(KeymapOp::None);
         assert_eq!(evt.code, Keycode::default());
         assert_eq!(evt.ksym, keysym::SYM_NONE);
         assert!(!evt.ksym.is_unicode());
+    }
+
+    #[test]
+    fn simulated_dvorak_maps_physical_key() {
+        // The QWERTY "s" key is "o" on Dvorak.
+        let evt = KeyInput {
+            key_code: kvk::ANSI_S,
+            text: Some('s'),
+            modifiers: Modifiers::default(),
+        }
+        .to_keyboard_event(SimulatedKeyboard::Dvorak.into());
+        assert_eq!(evt.ksym, Keysym::from('o'));
     }
 }
