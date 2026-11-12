@@ -7,4 +7,6 @@ rust-version.workspace = true
 
 [dependencies]
 chewing.workspace = true
+serde = { version = "1.0.229", features = ["derive"] }
+toml = "1.2.1"
 zhconv.workspace = true

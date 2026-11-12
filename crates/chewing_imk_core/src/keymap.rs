@@ -373,6 +373,20 @@ impl From<i32> for SimulatedKeyboard {
     }
 }
 
+impl From<SimulatedKeyboard> for i32 {
+    fn from(value: SimulatedKeyboard) -> Self {
+        match value {
+            SimulatedKeyboard::Qwerty => 0,
+            SimulatedKeyboard::Dvorak => 1,
+            SimulatedKeyboard::Qgmlwy => 2,
+            SimulatedKeyboard::Colemak => 3,
+            SimulatedKeyboard::ColemakDhAnsi => 4,
+            SimulatedKeyboard::ColemakDhOrth => 5,
+            SimulatedKeyboard::Workman => 6,
+        }
+    }
+}
+
 impl From<SimulatedKeyboard> for KeymapOp {
     fn from(value: SimulatedKeyboard) -> Self {
         use chewing::input::keymap::*;

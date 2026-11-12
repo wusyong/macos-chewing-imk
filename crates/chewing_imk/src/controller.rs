@@ -17,12 +17,7 @@ use objc2_app_kit::{NSEvent, NSEventMask, NSEventModifierFlags, NSEventType, NSM
 use objc2_foundation::NSUInteger;
 use objc2_input_method_kit::IMKInputController;
 
-use crate::{candidate_window, client, menu, notice_window, state};
-
-/// Keyboard layout requested from the client while we are active, so
-/// physical keys produce QWERTY characters whatever layout the user picked
-/// last. Zhuyin layouts themselves are handled by libchewing.
-const BASE_KEYBOARD_LAYOUT: &str = "com.apple.keylayout.ABC";
+use crate::{candidate_window, client, menu, notice_window, prefs, state};
 
 define_class!(
     // SAFETY:
@@ -52,7 +47,15 @@ define_class!(
         fn activate_server(&self, sender: Option<&AnyObject>) {
             debug!("activateServer");
             if let Some(client) = sender {
-                client::override_keyboard(client, BASE_KEYBOARD_LAYOUT);
+                // Pick up edits to the settings file made while we were away.
+                state::reload_config_if_changed();
+                // Ask for the system layout the zhuyin layout is defined on
+                // (usually ABC), whatever layout the user picked last.
+                if let Some(layout) =
+                    state::with_core(|core| core.config().base_keyboard_layout()).flatten()
+                {
+                    client::override_keyboard(client, layout);
+                }
                 // Caps Lock may have changed while another input source was
                 // active.
                 let caps_lock =
@@ -107,6 +110,13 @@ define_class!(
             }
         }
 
+        #[unsafe(method(openPreferences:))]
+        fn open_preferences(&self, _sender: Option<&AnyObject>) {
+            if let Some(mtm) = MainThreadMarker::new() {
+                prefs::show(mtm);
+            }
+        }
+
         #[unsafe(method(openLink:))]
         fn open_link(&self, sender: Option<&AnyObject>) {
             menu::open_link(sender);
@@ -132,6 +142,8 @@ impl ChewingController {
         };
         let ty = event.r#type();
         let resp = if ty == NSEventType::KeyDown {
+            // Cheap (one stat); like windows-chewing-tsf, check every key.
+            state::reload_config_if_changed();
             let input = key_input(event);
             state::with_core(|core| core.handle_key(&input))
         } else if ty == NSEventType::FlagsChanged {

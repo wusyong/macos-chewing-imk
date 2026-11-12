@@ -58,6 +58,12 @@ pub fn build(mtm: MainThreadMarker, state: &MenuState) -> Retained<NSMenu> {
     ));
 
     menu.addItem(&NSMenuItem::separatorItem(mtm));
+    menu.addItem(&item(
+        mtm,
+        "設定新酷音輸入法…",
+        sel!(openPreferences:),
+        None,
+    ));
     menu.addItem(&link(mtm, "新酷音使用說明", HELP));
     menu.addItem(&NSMenuItem::sectionHeaderWithTitle(
         ns_string!("網路辭典"),

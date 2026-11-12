@@ -6,11 +6,14 @@
 //! the key handling rules can be unit tested with a plain `cargo test`.
 
 pub mod config;
+pub mod config_file;
 mod engine;
 pub mod keybind;
 pub mod keymap;
 
-pub use engine::{Action, CandidateList, ChewingCore, Composition, KeyResponse, LangMode};
+pub use engine::{
+    Action, CandidateList, ChewingCore, Composition, ImportReport, KeyResponse, LangMode,
+};
 
 /// libchewing's default user data directory, shared with `chewing-cli`:
 /// `~/Library/Application Support/im.chewing.Chewing` (or `$CHEWING_USER_PATH`).

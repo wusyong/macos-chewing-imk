@@ -12,6 +12,7 @@ mod controller;
 mod menu;
 mod notice_window;
 mod panel;
+mod prefs;
 mod register;
 mod state;
 

@@ -167,10 +167,16 @@ flowchart LR
 
 ### Phase 4：設定與詞庫
 
-- [ ] 設定儲存在 `~/Library/Application Support/` 底下，欄位對應 `ChewingTsfConfig`
-- [ ] 設定熱重新載入：在 `activateServer:` 時檢查檔案修改時間，做法對應 Windows 版的 `reload_if_needed`
-- [ ] 偏好設定視窗
-- [ ] 使用者詞庫的匯入與匯出
+- [x] 設定檔：`~/Library/Application Support/im.chewing.Chewing/macos-config.toml`（TOML，欄位與數值編碼同 Windows 版 `ChewingTsfConfig`）。沒寫的欄位用預設值，超出範圍的值改回預設，格式錯誤時保留目前設定並記 log
+- [x] 熱重新載入：`activateServer:` 與每個按鍵時檢查檔案修改時間（一次 stat，同 Windows 版 `reload_if_needed`），變了就重建 libchewing editor 套用；組字中不重載，以免丟掉正在打的字
+- [x] 依注音鍵盤配置選擇系統鍵盤：一般用 ABC；Dvorak、Dvorak 許氏用 macOS 的 Dvorak；Colemak 用 Colemak；Carpalx、Colemak-DH、Workman 沿用使用者自己裝的配置（macOS 沒有內建）
+- [x] 偏好設定視窗：從輸入法選單「設定新酷音輸入法…」打開，存檔後立即生效。只用勾選框、下拉選單和按鈕（在輸入法自己的行程裡打字需要輸入法本身）。沒有放進視窗的設定（快捷鍵、字型名稱、Shift 判定時間）可以按「打開設定檔」手動修改。為了能顯示視窗，`Info.plist` 從 `LSBackgroundOnly` 改成 `LSUIElement`
+- [x] 使用者詞庫的匯入與匯出：CSV，第一行 `phrase,bopomofo`，之後一行一詞，例如 `你好,ㄋㄧˇ ㄏㄠˇ`。格式錯誤的行會跳過並列出行號
+- [x] 單元測試：core 共 49 個
+
+**實機測試（2026-11-12）**：偏好設定視窗版面正常；改「每列候選字數」後候選窗立即變成直排；「打開設定檔」會用文字編輯器打開 TOML。視窗起初會出現在目前 app 後面（macOS 14 的合作式啟用不讓輸入法搶前景），已改成強制啟用並把視窗設為浮動層級，重測後視窗會出現在最上面。匯出功能正常，但目前使用者詞庫是空的（只有 `Ctrl+數字` 加的詞才會進使用者詞庫）。
+
+Phase 4 完成。
 
 完成標準：修改設定後不需要重新登入就能生效。
 
@@ -201,14 +207,14 @@ flowchart LR
 | 7 | 候選窗策略 | **一開始就自製 `NSPanel`** | 不使用 `IMKCandidates`。Phase 1 先做最陽春的版本（直排文字、選字鍵、翻頁），Phase 3 再補外觀與細節 |
 | 8 | 字典來源 | **沿用 Windows 版做法：下載 libchewing-data 的 Generic 發佈檔** | Windows 版固定使用 [`libchewing-data-2026.11.1-Generic.zip`](https://codeberg.org/chewing/libchewing-data/releases/download/v2026.11.1/libchewing-data-2026.11.1-Generic.zip)，並以 sha256 驗證（見 windows-chewing-tsf 的 `nix/libchewing-data.nix`）。裡面有 `static_dict.bin`、`rare_dict.bin`、`static_words.bin`、`static_lm.bin`、`swkb.dat`、`symbols.dat`，和平台無關。xtask 下載、驗證後解壓到 `Contents/Resources/Dictionary` |
 | 9 | Core 邏輯來源 | **重寫架構、移植規則** | 自己設計平台無關的 `chewing_imk_core`（輸入按鍵事件，回傳 `handled` 加上 `Action` 列表），再把 Windows 版 `on_test_keydown` / `on_keydown` 的按鍵判斷規則逐條移植過來，每條規則配一個測試。理由見下方「Core 邏輯：移植還是重寫」 |
+| 10 | 設定格式 | **TOML** | 檔案放在 `~/Library/Application Support/im.chewing.Chewing/` 底下，欄位名稱沿用 Windows 版 `ChewingTsfConfig`；沒寫的欄位用預設值 |
+| 11 | 偏好設定 UI | **輸入法行程內的視窗** | 從輸入法選單打開，純 Rust + AppKit，存檔後立即生效 |
 
 ### 待決定
 
 | # | 事項 | 選項 | 建議 | 何時要定 |
 |---|---|---|---|---|
 | 5 | CPU 架構 | 只有 arm64／Universal | Universal：成本只是多編一次再 `lipo` | Phase 5 |
-| 10 | 設定格式 | 設定檔（TOML 或 JSON）／`NSUserDefaults` | 用 Application Support 底下的設定檔，讓 `chewing_imk_core` 保持平台無關、可以測試 | Phase 4 |
-| 11 | 偏好設定 UI | 輸入法行程內的視窗／獨立 app | 輸入法行程內的視窗，從輸入法選單打開，不需要額外的打包與 IPC | Phase 4 |
 | 12 | Caps Lock 行為 | 交給 macOS（切換到 ABC）／輸入法自己處理 | 預設交給系統，並在文件說明；要和 Windows 版行為一致的話再加設定項 | Phase 2 |
 | 13 | 發佈管道 | `.pkg`／zip + Homebrew cask／App Store | `.pkg` 加 Homebrew cask。App Store 需要沙盒，對輸入法限制太多 | Phase 5 |
 | 14 | Apple Developer 帳號 | 個人／組織 | 簽章與公證每年要 US$99；組織帳號較適合長期維護，和 #2 一起決定 | Phase 5 |

@@ -122,6 +122,24 @@ impl Config {
             .unwrap_or(SEL_KEYS[0])
     }
 
+    /// The macOS keyboard layout to ask the client for while we are active.
+    ///
+    /// Most zhuyin layouts are defined on physical keys, so we ask for ABC
+    /// (QWERTY) whatever the user picked last. The Dvorak and Colemak
+    /// variants are defined on the characters those layouts produce
+    /// (`KeymapOp::Ksym`), so they need the matching system layout. Layouts
+    /// macOS does not ship (Carpalx, Colemak-DH, Workman) are left to the
+    /// user's own installed layout.
+    pub fn base_keyboard_layout(&self) -> Option<&'static str> {
+        use KeyboardLayoutCompat as K;
+        match self.keyboard_layout {
+            K::Dvorak | K::DvorakHsu => Some("com.apple.keylayout.Dvorak"),
+            K::Colemak => Some("com.apple.keylayout.Colemak"),
+            K::Carpalx | K::ColemakDhAnsi | K::ColemakDhOrth | K::Workman => None,
+            _ => Some("com.apple.keylayout.ABC"),
+        }
+    }
+
     /// How keys are reinterpreted for the configured layouts. Ported from
     /// `keymap_from_kbtype` and `apply_runtime_config`.
     pub(crate) fn keymap(&self) -> KeymapOp {

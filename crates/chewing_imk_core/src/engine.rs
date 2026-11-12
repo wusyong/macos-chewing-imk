@@ -9,7 +9,7 @@
 //! [`Action`]s for the platform layer to carry out, in order.
 
 use std::error::Error;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use chewing::editor::zhuyin_layout::KeyboardLayoutCompat;
@@ -112,6 +112,8 @@ impl ShiftKeyState {
 
 pub struct ChewingCore {
     editor: Editor,
+    dict_dir: PathBuf,
+    user_dir: Option<PathBuf>,
     cfg: Config,
     lang_mode: LangMode,
     kbtype: KeyboardLayoutCompat,
@@ -145,12 +147,7 @@ impl ChewingCore {
         user_dir: Option<&Path>,
         cfg: Config,
     ) -> Result<ChewingCore, Box<dyn Error + Send + Sync>> {
-        let mut editor = Editor::chewing(
-            Some(dict_dir.to_string_lossy().into_owned()),
-            user_dir.map(|p| p.to_string_lossy().into_owned()),
-        )?;
-        editor.set_editor_options(|opt| cfg.apply_to(opt));
-        editor.set_syllable_editor(cfg.syllable_editor());
+        let editor = build_editor(dict_dir, user_dir, &cfg)?;
         let lang_mode = if cfg.default_english {
             LangMode::English
         } else {
@@ -159,6 +156,8 @@ impl ChewingCore {
         let keybindings = cfg.keybind.iter().filter_map(Keybinding::parse).collect();
         Ok(ChewingCore {
             editor,
+            dict_dir: dict_dir.to_owned(),
+            user_dir: user_dir.map(Path::to_owned),
             kbtype: cfg.keyboard_layout,
             keymap: cfg.keymap(),
             keybindings,
@@ -179,6 +178,28 @@ impl ChewingCore {
 
     pub fn config(&self) -> &Config {
         &self.cfg
+    }
+
+    /// Switch to new settings. Like windows-chewing-tsf's
+    /// `apply_runtime_config`, the editor is recreated (which also picks up
+    /// user dictionary changes made by other tools). The language mode,
+    /// width and simplified output are kept. Call when not composing: any
+    /// composition is dropped.
+    pub fn apply_config(&mut self, cfg: Config) -> Result<(), Box<dyn Error + Send + Sync>> {
+        let form = self.character_form();
+        let mut editor = build_editor(&self.dict_dir, self.user_dir.as_deref(), &cfg)?;
+        editor.set_editor_options(|opt| opt.character_form = form);
+        self.editor = editor;
+        self.kbtype = cfg.keyboard_layout;
+        self.keymap = cfg.keymap();
+        self.keybindings = cfg.keybind.iter().filter_map(Keybinding::parse).collect();
+        self.cfg = cfg;
+        self.shift_state = ShiftKeyState::Up;
+        self.has_marked_text = false;
+        self.candidates_shown = false;
+        self.cand_sel = 0;
+        self.cand_count = 0;
+        Ok(())
     }
 
     pub fn output_simp_chinese(&self) -> bool {
@@ -803,6 +824,101 @@ impl ChewingCore {
             cursor: cursor + bopomofo_len,
         }
     }
+}
+
+/// Result of [`ChewingCore::import_user_phrases`].
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct ImportReport {
+    pub added: usize,
+    /// Lines that could not be read (line number, 1-based).
+    pub skipped: Vec<usize>,
+}
+
+/// CSV header used for exported user phrases.
+const PHRASE_CSV_HEADER: &str = "phrase,bopomofo";
+
+impl ChewingCore {
+    /// The user dictionary as CSV: a `phrase,bopomofo` header, then one
+    /// phrase per line with its syllables separated by spaces, e.g.
+    /// `你好,ㄋㄧˇ ㄏㄠˇ`.
+    pub fn export_user_phrases(&self) -> String {
+        let mut rows: Vec<(String, String)> = self
+            .editor
+            .user_dict()
+            .entries()
+            .map(|(syllables, phrase)| {
+                let bopomofo: Vec<String> = syllables.iter().map(|s| s.to_string()).collect();
+                (phrase, bopomofo.join(" "))
+            })
+            .collect();
+        rows.sort();
+        let mut out = String::from(PHRASE_CSV_HEADER);
+        out.push('\n');
+        for (phrase, bopomofo) in rows {
+            out.push_str(&csv_field(&phrase));
+            out.push(',');
+            out.push_str(&bopomofo);
+            out.push('\n');
+        }
+        out
+    }
+
+    /// Add the phrases in `text` (the format of `export_user_phrases`) to
+    /// the user dictionary. Blank lines, `#` comments and the header are
+    /// ignored; malformed lines are reported and skipped.
+    pub fn import_user_phrases(&mut self, text: &str) -> ImportReport {
+        let mut report = ImportReport::default();
+        for (n, line) in text.lines().enumerate() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') || line == PHRASE_CSV_HEADER {
+                continue;
+            }
+            let parsed = line.rsplit_once(',').and_then(|(phrase, bopomofo)| {
+                let phrase = csv_unquote(phrase.trim());
+                let syllables: chewing::zhuyin::SyllableVec = bopomofo.trim().parse().ok()?;
+                (!phrase.is_empty() && syllables.len() == phrase.chars().count())
+                    .then_some((phrase, syllables))
+            });
+            match parsed {
+                Some((phrase, syllables))
+                    if self.editor.learn_phrase(&syllables, &phrase).is_ok() =>
+                {
+                    report.added += 1;
+                }
+                _ => report.skipped.push(n + 1),
+            }
+        }
+        report
+    }
+}
+
+fn csv_field(s: &str) -> String {
+    if s.contains([',', '"', '\n']) {
+        format!("\"{}\"", s.replace('"', "\"\""))
+    } else {
+        s.to_owned()
+    }
+}
+
+fn csv_unquote(s: &str) -> String {
+    match s.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
+        Some(inner) => inner.replace("\"\"", "\""),
+        None => s.to_owned(),
+    }
+}
+
+fn build_editor(
+    dict_dir: &Path,
+    user_dir: Option<&Path>,
+    cfg: &Config,
+) -> Result<Editor, Box<dyn Error + Send + Sync>> {
+    let mut editor = Editor::chewing(
+        Some(dict_dir.to_string_lossy().into_owned()),
+        user_dir.map(|p| p.to_string_lossy().into_owned()),
+    )?;
+    editor.set_editor_options(|opt| cfg.apply_to(opt));
+    editor.set_syllable_editor(cfg.syllable_editor());
+    Ok(editor)
 }
 
 #[cfg(test)]

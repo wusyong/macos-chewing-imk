@@ -669,3 +669,77 @@ fn ctrl_delete_unlearns_the_highlighted_phrase() {
     assert!(resp.handled);
     assert_eq!(notices(&resp.actions), ["刪除：你好"]);
 }
+
+// ---- Phase 4: applying new settings ----
+
+#[test]
+fn apply_config_switches_layout_and_keeps_modes() {
+    let mut core = core();
+    tap_shift(&mut core, 1000, 1050); // English
+    core.toggle_shape_mode(); // full width
+    let cfg = Config {
+        keyboard_layout: chewing::editor::zhuyin_layout::KeyboardLayoutCompat::Hsu,
+        cand_per_row: 1,
+        ..Config::default()
+    };
+    core.apply_config(cfg).unwrap();
+    assert_eq!(core.lang_mode(), LangMode::English);
+    assert_eq!(core.character_form(), CharacterForm::Fullwidth);
+    assert_eq!(core.config().cand_per_row, 1);
+
+    // Back to Chinese: "n" is ㄋ in the Hsu layout.
+    tap_shift(&mut core, 2000, 2050);
+    let resp = core.handle_key(&KeyInput {
+        key_code: kvk::ANSI_N,
+        text: Some('n'),
+        modifiers: Modifiers::default(),
+    });
+    assert_eq!(last_composition(&resp).unwrap().text, "ㄋ");
+}
+
+#[test]
+fn base_keyboard_layout_follows_zhuyin_layout() {
+    use chewing::editor::zhuyin_layout::KeyboardLayoutCompat as K;
+    let layout = |k| {
+        Config {
+            keyboard_layout: k,
+            ..Config::default()
+        }
+        .base_keyboard_layout()
+    };
+    assert_eq!(layout(K::Default), Some("com.apple.keylayout.ABC"));
+    assert_eq!(layout(K::Hsu), Some("com.apple.keylayout.ABC"));
+    assert_eq!(layout(K::Dvorak), Some("com.apple.keylayout.Dvorak"));
+    assert_eq!(layout(K::Colemak), Some("com.apple.keylayout.Colemak"));
+    assert_eq!(layout(K::Workman), None);
+}
+
+#[test]
+fn user_phrases_export_and_import() {
+    let mut core = core();
+    assert_eq!(core.export_user_phrases(), "phrase,bopomofo\n");
+
+    let report = core.import_user_phrases(
+        "phrase,bopomofo\n# comment\n\n你好,ㄋㄧˇ ㄏㄠˇ\n輸入法,ㄕㄨ ㄖㄨˋ ㄈㄚˇ\n壞的,ㄏㄨㄞˋ\nnot csv\n",
+    );
+    assert_eq!(report.added, 2);
+    assert_eq!(report.skipped, vec![6, 7]);
+
+    let exported = core.export_user_phrases();
+    assert!(exported.contains("你好,ㄋㄧˇ ㄏㄠˇ\n"), "{exported}");
+    assert!(exported.contains("輸入法,ㄕㄨ ㄖㄨˋ ㄈㄚˇ\n"), "{exported}");
+
+    // What we export, a fresh dictionary imports in full.
+    let mut other = self::core();
+    let report = other.import_user_phrases(&exported);
+    assert_eq!(report.added, 2);
+    assert!(report.skipped.is_empty());
+    assert_eq!(other.export_user_phrases(), exported);
+}
+
+#[test]
+fn csv_quoting_round_trips() {
+    assert_eq!(super::csv_field("a,b"), "\"a,b\"");
+    assert_eq!(super::csv_unquote("\"a,\"\"b\"\"\""), "a,\"b\"");
+    assert_eq!(super::csv_unquote("plain"), "plain");
+}
