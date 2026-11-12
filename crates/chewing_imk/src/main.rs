@@ -9,6 +9,7 @@
 mod candidate_window;
 mod client;
 mod controller;
+mod menu;
 mod notice_window;
 mod panel;
 mod register;

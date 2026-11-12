@@ -16,6 +16,7 @@ use chewing::editor::zhuyin_layout::KeyboardLayoutCompat;
 use chewing::editor::{BasicEditor, CharacterForm, Editor, EditorKeyBehavior, LanguageMode};
 use chewing::input::keysym::{self, Keysym, SYM_SPACE};
 use chewing::input::{KeyState, KeyboardEvent, keycode};
+use chewing::zhuyin::Syllable;
 use zhconv::{Variant, zhconv};
 
 use crate::config::Config;
@@ -45,6 +46,10 @@ pub struct CandidateList {
     /// 1-based.
     pub page: usize,
     pub total_pages: usize,
+    /// Candidates per row in the window (1 = a vertical list).
+    pub per_row: usize,
+    /// The candidate the arrow keys have moved to (`cursor_cand_list`).
+    pub highlighted: Option<usize>,
 }
 
 /// What the platform layer must do, in order.
@@ -118,6 +123,17 @@ pub struct ChewingCore {
     has_marked_text: bool,
     /// The candidate window is currently shown.
     candidates_shown: bool,
+    /// Highlighted candidate on the shown page, and how many there are.
+    cand_sel: usize,
+    cand_count: usize,
+}
+
+/// Result of moving the candidate highlight. Ported from windows-chewing-tsf's
+/// `FilterKeyResult`.
+enum Highlight {
+    NotHandled,
+    Moved,
+    Commit,
 }
 
 impl ChewingCore {
@@ -152,11 +168,17 @@ impl ChewingCore {
             lang_mode,
             has_marked_text: false,
             candidates_shown: false,
+            cand_sel: 0,
+            cand_count: 0,
         })
     }
 
     pub fn lang_mode(&self) -> LangMode {
         self.lang_mode
+    }
+
+    pub fn config(&self) -> &Config {
+        &self.cfg
     }
 
     pub fn output_simp_chinese(&self) -> bool {
@@ -479,6 +501,9 @@ impl ChewingCore {
     /// Feed the key to libchewing and report the results. Ported from
     /// `on_keydown`.
     fn process(&mut self, mut evt: KeyboardEvent) -> KeyResponse {
+        // The key was used by the candidate window instead of libchewing.
+        let mut handled_here = false;
+        let mut unlearned = None;
         if evt.ksym.is_unicode() {
             let shift = evt.is_state_on(KeyState::Shift);
             let mut momentary_english_mode = false;
@@ -530,12 +555,58 @@ impl ChewingCore {
                 self.editor.process_keyevent(evt);
             }
         } else {
-            self.editor.process_keyevent(evt);
+            // Arrow keys, Enter and Ctrl+Delete act on the candidate window
+            // first. Ported from the `cursor_cand_list` part of `on_keydown`.
+            let mut key_handled = false;
+            if self.cfg.cursor_cand_list && self.candidates_shown {
+                match self.move_highlight(evt.ksym) {
+                    Highlight::Commit => {
+                        let _ = self.editor.select(self.cand_sel);
+                        key_handled = true;
+                    }
+                    Highlight::Moved => {
+                        let actions = self
+                            .candidate_list()
+                            .map(Action::ShowCandidates)
+                            .into_iter()
+                            .collect();
+                        return KeyResponse {
+                            handled: true,
+                            actions,
+                        };
+                    }
+                    Highlight::NotHandled => {}
+                }
+                let unlearn = self
+                    .keybindings
+                    .iter()
+                    .any(|kb| kb.action == "selecting_unlearn_phrase" && kb.matches(&evt));
+                if !key_handled
+                    && unlearn
+                    && self.editor.is_selecting()
+                    && let Some(phrase) = self.unlearn_highlighted()
+                {
+                    unlearned = Some(phrase);
+                    key_handled = true;
+                }
+            }
+            if !key_handled {
+                self.editor.process_keyevent(evt);
+            } else {
+                handled_here = true;
+            }
         }
 
-        let behavior = self.editor.last_key_behavior();
+        let behavior = if handled_here {
+            EditorKeyBehavior::Absorb
+        } else {
+            self.editor.last_key_behavior()
+        };
         let mut actions = vec![];
         self.push_candidates(&mut actions);
+        if let Some(phrase) = unlearned {
+            actions.push(Action::ShowNotice(format!("刪除：{phrase}")));
+        }
         // Messages from libchewing (e.g. "加入：…" after Ctrl+digit) are
         // always shown, like windows-chewing-tsf.
         let notice = self.editor.notification();
@@ -586,9 +657,74 @@ impl ChewingCore {
         evt
     }
 
+    /// Move the highlight with the arrow keys; Enter picks it. Ported from
+    /// `CandidateList::filter_key_event` (window mode).
+    fn move_highlight(&mut self, ksym: Keysym) -> Highlight {
+        let per_row = self.cfg.cand_per_row.max(1);
+        let n = self.cand_count;
+        if n == 0 {
+            return Highlight::NotHandled;
+        }
+        let old = self.cand_sel;
+        match ksym {
+            keysym::SYM_UP => {
+                if self.cand_sel >= per_row {
+                    self.cand_sel -= per_row;
+                }
+            }
+            keysym::SYM_DOWN => {
+                if self.cand_sel + per_row < n {
+                    self.cand_sel += per_row;
+                }
+            }
+            keysym::SYM_LEFT if per_row > 1 => self.cand_sel = self.cand_sel.saturating_sub(1),
+            keysym::SYM_RIGHT if per_row > 1 => self.cand_sel = (self.cand_sel + 1).min(n - 1),
+            keysym::SYM_RETURN => return Highlight::Commit,
+            _ => {}
+        }
+        if self.cand_sel != old {
+            Highlight::Moved
+        } else {
+            Highlight::NotHandled
+        }
+    }
+
+    /// Remove the highlighted candidate from the user dictionary. Returns the
+    /// phrase if it matched the syllables at the cursor. Ported from the
+    /// `selecting_unlearn_phrase` keybinding.
+    fn unlearn_highlighted(&mut self) -> Option<String> {
+        let items = self.editor.paginated_candidates().ok()?;
+        let phrase = items.get(self.cand_sel)?.clone();
+        let len = phrase.chars().count();
+        // TODO (upstream): expose begin and end from the selector.
+        let cursor = if self.cfg.phrase_choice_rearward {
+            self.editor.cursor().saturating_sub(len.saturating_sub(1))
+        } else {
+            self.editor.cursor()
+        };
+        let syllables: Vec<Syllable> = self
+            .editor
+            .symbols()
+            .iter()
+            .skip(cursor)
+            .take(len)
+            .map_while(|s| s.to_syllable())
+            .collect();
+        if syllables.len() != len {
+            return None;
+        }
+        // Like windows-chewing-tsf, report the phrase even if the user
+        // dictionary did not contain it.
+        let _ = self.editor.unlearn_phrase(&syllables, &phrase);
+        Some(phrase)
+    }
+
     fn push_candidates(&mut self, actions: &mut Vec<Action>) {
         if self.editor.is_selecting() {
+            // A new or changed list starts at its first candidate.
+            self.cand_sel = 0;
             if let Some(list) = self.candidate_list() {
+                self.cand_count = list.items.len();
                 actions.push(Action::ShowCandidates(list));
                 self.candidates_shown = true;
                 return;
@@ -613,11 +749,15 @@ impl ChewingCore {
         items.truncate(per_page);
         let sel_keys: Vec<char> = self.cfg.sel_keys().chars().take(items.len()).collect();
         items.truncate(sel_keys.len());
+        let highlighted = (self.cfg.cursor_cand_list && !items.is_empty())
+            .then(|| self.cand_sel.min(items.len() - 1));
         Some(CandidateList {
             items,
             sel_keys,
             page,
             total_pages,
+            per_row: self.cfg.cand_per_row.max(1),
+            highlighted,
         })
     }
 

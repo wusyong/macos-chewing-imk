@@ -55,6 +55,14 @@ pub struct Config {
     /// 0 = simple, 1 = chewing, 2 = fuzzy chewing
     pub conv_engine: u8,
     pub cand_per_page: usize,
+    /// Move a highlight with the arrow keys and pick it with Enter.
+    pub cursor_cand_list: bool,
+    /// Candidates per row in the window (1 = a vertical list).
+    pub cand_per_row: usize,
+    /// Candidate window font size, in points.
+    pub font_size: f64,
+    /// Candidate window font; empty means the system font.
+    pub font_family: String,
     pub keyboard_layout: KeyboardLayoutCompat,
     pub simulate_english_layout: SimulatedKeyboard,
     pub show_notification: bool,
@@ -90,6 +98,10 @@ impl Default for Config {
             sel_key_type: 0,
             conv_engine: 1,
             cand_per_page: 9,
+            cursor_cand_list: true,
+            cand_per_row: 3,
+            font_size: 16.0,
+            font_family: String::new(),
             keyboard_layout: KeyboardLayoutCompat::Default,
             simulate_english_layout: SimulatedKeyboard::Qwerty,
             show_notification: true,

@@ -90,6 +90,7 @@ dependencies = [
 name = "chewing_imk"
 version = "0.1.0"
 dependencies = [
+ "chewing",
  "chewing_imk_core",
  "log",
  "objc2",

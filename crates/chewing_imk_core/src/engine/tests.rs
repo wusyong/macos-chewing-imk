@@ -576,3 +576,96 @@ fn duplicated_modifier_events_still_toggle_once() {
     assert!(resp.actions.is_empty());
     assert_eq!(core.lang_mode(), LangMode::English);
 }
+
+// ---- Phase 3: candidate cursor ----
+
+fn shown_list(resp: &KeyResponse) -> Option<&CandidateList> {
+    resp.actions.iter().rev().find_map(|a| match a {
+        Action::ShowCandidates(l) => Some(l),
+        _ => None,
+    })
+}
+
+#[test]
+fn arrow_keys_move_the_candidate_highlight() {
+    let mut core = core();
+    type_str(&mut core, "su3");
+    let resp = core.handle_key(&special(kvk::DOWN_ARROW));
+    let list = shown_list(&resp).unwrap();
+    assert_eq!(list.per_row, 3);
+    assert_eq!(list.highlighted, Some(0));
+    assert!(list.items.len() > 4, "need two rows: {:?}", list.items);
+
+    let steps = [
+        (kvk::RIGHT_ARROW, 1),
+        (kvk::DOWN_ARROW, 4),
+        (kvk::UP_ARROW, 1),
+        (kvk::LEFT_ARROW, 0),
+    ];
+    for (k, expected) in steps {
+        let resp = core.handle_key(&special(k));
+        assert!(resp.handled);
+        // Only the candidate window changes.
+        assert_eq!(resp.actions.len(), 1, "{:?}", resp.actions);
+        assert_eq!(shown_list(&resp).unwrap().highlighted, Some(expected));
+    }
+}
+
+#[test]
+fn return_picks_the_highlighted_candidate() {
+    let mut core = core();
+    type_str(&mut core, "cl3");
+    let resp = core.handle_key(&special(kvk::DOWN_ARROW));
+    let third = shown_list(&resp).unwrap().items[2].clone();
+    core.handle_key(&special(kvk::RIGHT_ARROW));
+    core.handle_key(&special(kvk::RIGHT_ARROW));
+    let resp = core.handle_key(&special(kvk::RETURN));
+    assert!(resp.handled);
+    assert!(resp.actions.contains(&Action::HideCandidates));
+    assert!(commits(&resp).is_empty(), "picking does not commit yet");
+    assert_eq!(last_composition(&resp).unwrap().text, third);
+}
+
+#[test]
+fn without_cursor_mode_arrows_go_to_libchewing() {
+    let mut core = core_with(Config {
+        cursor_cand_list: false,
+        ..Config::default()
+    });
+    type_str(&mut core, "cl3");
+    let resp = core.handle_key(&special(kvk::DOWN_ARROW));
+    assert_eq!(shown_list(&resp).unwrap().highlighted, None);
+    // Right is handled by libchewing (not a highlight move).
+    let resp = core.handle_key(&special(kvk::RIGHT_ARROW));
+    assert!(shown_list(&resp).is_none_or(|l| l.highlighted.is_none()));
+}
+
+#[test]
+fn ctrl_delete_unlearns_the_highlighted_phrase() {
+    let mut core = core();
+    let control = Modifiers {
+        control: true,
+        ..Default::default()
+    };
+    // Teach "你好" as a user phrase, then look at the candidates for it.
+    type_str(&mut core, "su3cl3");
+    core.handle_key(&key_with('2', control));
+    core.handle_key(&special(kvk::HOME));
+    let resp = core.handle_key(&special(kvk::DOWN_ARROW));
+    let list = shown_list(&resp).unwrap();
+    let idx = list
+        .items
+        .iter()
+        .position(|c| c == "你好")
+        .unwrap_or_else(|| panic!("你好 not offered: {:?}", list.items));
+    for _ in 0..idx {
+        core.handle_key(&special(kvk::RIGHT_ARROW));
+    }
+    let resp = core.handle_key(&KeyInput {
+        key_code: kvk::FORWARD_DELETE,
+        text: None,
+        modifiers: control,
+    });
+    assert!(resp.handled);
+    assert_eq!(notices(&resp.actions), ["刪除：你好"]);
+}

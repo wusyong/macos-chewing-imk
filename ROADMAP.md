@@ -151,12 +151,19 @@ flowchart LR
 
 ### Phase 3：自製 UI
 
-- [ ] 候選窗完善：橫排／直排、字型與大小設定、游標選字（`cursor_cand_list`）、多螢幕邊界、深色模式
+- [x] 候選窗完善：
+  - 格狀排列，每列 `cand_per_row` 個（預設 3，與 Windows 版相同；設成 1 就是直排），欄寬用實際字型量出最寬的候選字
+  - 游標選字（`cursor_cand_list`，預設開啟）：方向鍵移動反白、Enter 選字；`Ctrl+Delete` 從使用者詞庫刪除反白的詞（Mac 鍵盤是 `fn+Ctrl+Delete`）
+  - 字型與大小（`font_family`、`font_size`，預設系統字型 16 pt）
+  - 顏色用系統色（`labelColor`、`selectedContentBackgroundColor` 等），自動跟著淺色／深色模式。Windows 版的自訂顏色欄位暫不支援，Phase 4 視需要再加
+  - 下方空間不夠時改放上方，並限制在游標所在螢幕的可見範圍內
 - [x] 切換中英時的小提示（對應 Windows 版的 Notification），Phase 2 已先做出基本版
-- [ ] 輸入法選單：由 `menu` 回傳 `NSMenu`，包含中英、全半形、簡繁、偏好設定、關於
-- [ ] 輸入模式圖示（template 圖檔）
+- [x] 輸入法選單：由 `menu` 回傳 `NSMenu`，項目照 Windows 版的右鍵選單：英數模式、輸出全形英數字母、輸出簡體中文（都有勾選狀態）、使用說明、網路辭典、官方網站、詞庫錯誤回報。「設定」與「編輯使用者詞庫」等 Phase 4；「軟體錯誤回報」等 repo 位置確定後再加
+- [x] 輸入模式圖示：選單列使用 template 圖檔「酷」，自動適應淺色／深色。Windows 版會依中英模式換圖示，macOS 要做到同樣效果需要拆成多個輸入模式（`ComponentInputModeDict`），目前不做，改用提示視窗表示
 
 完成標準：候選窗在 Retina、多螢幕、全螢幕 app 中位置都正確。
+
+**實機測試（2026-11-12）**：在 Retina 螢幕上確認格狀候選窗、方向鍵反白、Enter 選字、輸入法選單的勾選與切換、網路辭典連結都正常。多螢幕與全螢幕 app 尚未測試（手邊沒有外接螢幕）；程式會把候選窗限制在游標所在螢幕的可見範圍內，但實際效果待有環境時確認，列入 Phase 5 的相容性測試。
 
 ### Phase 4：設定與詞庫
 
@@ -169,6 +176,7 @@ flowchart LR
 
 ### Phase 5：相容性與發佈
 
+- [ ] 多螢幕與全螢幕 app 的候選窗位置（Phase 3 遺留）
 - [ ] 相容性測試矩陣：TextEdit、Safari、Chrome、Firefox、Terminal、iTerm2、VS Code、Word、Spotlight、密碼欄位
 - [ ] 個別 app 的特例處理模組，對應 Windows 版的 `quirk.rs`
 - [ ] Universal binary：分別編譯 `aarch64-apple-darwin` 與 `x86_64-apple-darwin`，再用 `lipo` 合併

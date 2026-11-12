@@ -6,16 +6,18 @@
 
 use std::time::Duration;
 
+use chewing::editor::CharacterForm;
 use chewing_imk_core::Action;
 use chewing_imk_core::keymap::{KeyInput, ModifierInput, Modifiers};
 use log::{debug, warn};
+use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{MainThreadMarker, define_class, msg_send};
-use objc2_app_kit::{NSEvent, NSEventMask, NSEventModifierFlags, NSEventType};
+use objc2_app_kit::{NSEvent, NSEventMask, NSEventModifierFlags, NSEventType, NSMenu};
 use objc2_foundation::NSUInteger;
 use objc2_input_method_kit::IMKInputController;
 
-use crate::{candidate_window, client, notice_window, state};
+use crate::{candidate_window, client, menu, notice_window, state};
 
 /// Keyboard layout requested from the client while we are active, so
 /// physical keys produce QWERTY characters whatever layout the user picked
@@ -79,10 +81,51 @@ define_class!(
             debug!("commitComposition");
             self.commit_pending(sender);
         }
+
+        /// Items added to the input menu while we are active.
+        #[unsafe(method_id(menu))]
+        fn menu(&self) -> Option<Retained<NSMenu>> {
+            build_menu()
+        }
+
+        #[unsafe(method(toggleLanguageMode:))]
+        fn toggle_language_mode(&self, _sender: Option<&AnyObject>) {
+            if let Some(actions) = state::with_core(|core| core.toggle_lang_mode()) {
+                self.apply_to_current_client(actions);
+            }
+        }
+
+        #[unsafe(method(toggleShapeMode:))]
+        fn toggle_shape_mode(&self, _sender: Option<&AnyObject>) {
+            state::with_core(|core| core.toggle_shape_mode());
+        }
+
+        #[unsafe(method(toggleSimplifiedChinese:))]
+        fn toggle_simplified_chinese(&self, _sender: Option<&AnyObject>) {
+            if let Some(actions) = state::with_core(|core| core.toggle_simplified_chinese()) {
+                self.apply_to_current_client(actions);
+            }
+        }
+
+        #[unsafe(method(openLink:))]
+        fn open_link(&self, sender: Option<&AnyObject>) {
+            menu::open_link(sender);
+        }
     }
 );
 
 impl ChewingController {
+    /// Menu actions are not tied to a key event; use the controller's client.
+    fn apply_to_current_client(&self, actions: Vec<Action>) {
+        // SAFETY: `client` is an IMKInputController method returning the
+        // current IMKTextInput client.
+        let client: Option<Retained<AnyObject>> = unsafe { msg_send![self, client] };
+        match client {
+            Some(client) => self.apply(&client, actions),
+            None => warn!("menu action without a client"),
+        }
+    }
+
     fn handle_event_impl(&self, event: Option<&NSEvent>, sender: Option<&AnyObject>) -> bool {
         let (Some(event), Some(client)) = (event, sender) else {
             return false;
@@ -163,12 +206,31 @@ impl ChewingController {
         };
         let line = client::line_rect(client, anchor);
         if let Some(list) = candidates {
-            candidate_window::show(mtm, &list, line);
+            let (font_size, font_family) = state::with_core(|core| {
+                let cfg = core.config();
+                (cfg.font_size, cfg.font_family.clone())
+            })
+            .unwrap_or((16.0, String::new()));
+            let style = candidate_window::Style {
+                font_size,
+                font_family: &font_family,
+            };
+            candidate_window::show(mtm, &list, &style, line);
         }
         if let Some(message) = notice {
             notice_window::show(mtm, &message, line);
         }
     }
+}
+
+fn build_menu() -> Option<Retained<NSMenu>> {
+    let mtm = MainThreadMarker::new()?;
+    let state = state::with_core(|core| menu::MenuState {
+        lang_mode: core.lang_mode(),
+        fullwidth: core.character_form() == CharacterForm::Fullwidth,
+        simplified: core.output_simp_chinese(),
+    })?;
+    Some(menu::build(mtm, &state))
 }
 
 fn modifiers(flags: NSEventModifierFlags) -> Modifiers {
