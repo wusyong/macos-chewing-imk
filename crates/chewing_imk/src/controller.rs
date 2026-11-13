@@ -275,10 +275,13 @@ fn modifier_input(event: &NSEvent) -> ModifierInput {
 }
 
 fn key_input(event: &NSEvent) -> KeyInput {
-    // `charactersIgnoringModifiers` applies Shift but not Control/Option/
-    // Command, like windows-chewing-tsf's ToAscii call without Ctrl.
+    // The character with Shift applied but not Control/Option/Command, like
+    // windows-chewing-tsf's ToAscii call without Ctrl. Not
+    // `charactersIgnoringModifiers`: it drops Shift on symbol keys, so
+    // Shift+/ came through as "/" instead of "?".
+    let shift = event.modifierFlags() & NSEventModifierFlags::Shift;
     let text = event
-        .charactersIgnoringModifiers()
+        .charactersByApplyingModifiers(shift)
         .and_then(|s| s.to_string().chars().next());
     KeyInput {
         key_code: event.keyCode(),

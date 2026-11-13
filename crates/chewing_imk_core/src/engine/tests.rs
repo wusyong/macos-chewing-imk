@@ -68,6 +68,7 @@ fn kvk_for(c: char) -> u16 {
         '3' => kvk::ANSI_3,
         '4' => kvk::ANSI_4,
         '8' => kvk::ANSI_8,
+        '/' | '?' => kvk::ANSI_SLASH,
         ' ' => kvk::SPACE,
         other => panic!("add {other:?} to kvk_for"),
     }
@@ -742,4 +743,23 @@ fn csv_quoting_round_trips() {
     assert_eq!(super::csv_field("a,b"), "\"a,b\"");
     assert_eq!(super::csv_unquote("\"a,\"\"b\"\"\""), "a,\"b\"");
     assert_eq!(super::csv_unquote("plain"), "plain");
+}
+
+#[test]
+fn shift_slash_types_fullwidth_question_mark() {
+    // macOS reports Shift+/ as "?" with Shift held; it must type "？".
+    let shift = Modifiers {
+        shift: true,
+        ..Default::default()
+    };
+    let mut core = core();
+    let resp = core.handle_key(&key_with('?', shift));
+    assert!(resp.handled);
+    assert_eq!(
+        resp.actions,
+        [Action::UpdateComposition(Composition {
+            text: "？".into(),
+            cursor: 1,
+        })]
+    );
 }
