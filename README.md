@@ -2,6 +2,8 @@
 
 用純 Rust（[objc2](https://github.com/madsmtm/objc2)）透過 InputMethodKit 實作的 macOS 新酷音輸入法，引擎是 [libchewing](https://codeberg.org/chewing/libchewing)。可以用注音打字、選字，單按 Shift 切換中英，有候選窗、輸入法選單和偏好設定視窗。目前是個人專案，只供自己安裝使用。
 
+<img src="docs/demo.gif" width="510" alt="用新酷音打「新酷音輸入法 for macOS」的示範">
+
 ## 需求
 
 - macOS 14 Sonoma 以上
