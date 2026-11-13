@@ -4,7 +4,8 @@
 //!
 //! Run without arguments, it is started by macOS as the input method server.
 //! Run with `--register`, it registers and enables its own bundle as an input
-//! source (used by `cargo xtask install`).
+//! source (used by `cargo xtask install`). `--demo-candidates` shows the
+//! candidate window with sample candidates, for working on its look.
 
 mod candidate_window;
 mod client;
@@ -39,9 +40,12 @@ fn main() -> ExitCode {
         Some("--register") => register::register(),
         Some("--unregister") => register::unregister(),
         Some("--status") => register::status(),
+        Some("--demo-candidates") => demo_candidates(),
         Some(other) => {
             eprintln!("unknown argument: {other}");
-            eprintln!("usage: ChewingIMK [--register | --unregister | --status]");
+            eprintln!(
+                "usage: ChewingIMK [--register | --unregister | --status | --demo-candidates]"
+            );
             ExitCode::FAILURE
         }
     }
@@ -137,6 +141,67 @@ fn run_server() -> ExitCode {
 
     // Not reached in practice: the process is terminated by the system.
     drop(server);
+    ExitCode::SUCCESS
+}
+
+/// Show the candidate window near the top of the screen and step the
+/// highlight through sample pages, until the process is killed.
+fn demo_candidates() -> ExitCode {
+    use std::cell::Cell;
+
+    use chewing_imk_core::CandidateList;
+    use objc2_app_kit::{NSApplicationActivationPolicy, NSScreen};
+    use objc2_foundation::{NSPoint, NSRect, NSSize, NSTimer};
+
+    let Some(mtm) = MainThreadMarker::new() else {
+        return ExitCode::FAILURE;
+    };
+    let app = NSApplication::sharedApplication(mtm);
+    app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+
+    let pages: [&[&str]; 2] = [
+        &["哈囉", "👋", "囉", "捋", "剁", "哥", "攞", "犸", "囉嗦"],
+        &["你", "妳", "擬", "尼", "泥", "逆", "膩", "倪", "匿"],
+    ];
+    let per_row: usize = std::env::var("DEMO_PER_ROW")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(9);
+    let line = NSScreen::mainScreen(mtm).map(|s| {
+        let f = s.visibleFrame();
+        NSRect::new(
+            NSPoint::new(f.origin.x + 200.0, f.origin.y + f.size.height - 200.0),
+            NSSize::new(2.0, 20.0),
+        )
+    });
+    let step = Cell::new(0_usize);
+    let tick = move || {
+        let n = step.get();
+        step.set(n + 1);
+        let page = (n / 4) % pages.len();
+        let items = pages[page];
+        let list = CandidateList {
+            items: items.iter().map(|s| s.to_string()).collect(),
+            sel_keys: "123456789".chars().take(items.len()).collect(),
+            page: page + 1,
+            total_pages: pages.len(),
+            per_row,
+            highlighted: Some(n % 4),
+        };
+        let style = candidate_window::Style {
+            font_size: 20.0,
+            font_family: "",
+        };
+        if let Some(mtm) = MainThreadMarker::new() {
+            candidate_window::show(mtm, &list, &style, line);
+        }
+    };
+    tick();
+    let block = block2::RcBlock::new(move |_: std::ptr::NonNull<NSTimer>| tick());
+    // SAFETY: the block only runs on the main thread's run loop.
+    let _timer =
+        unsafe { NSTimer::scheduledTimerWithTimeInterval_repeats_block(0.8, true, &block) };
+    app.run();
     ExitCode::SUCCESS
 }
 

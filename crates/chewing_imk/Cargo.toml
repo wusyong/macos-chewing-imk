@@ -10,6 +10,7 @@ name = "ChewingIMK"
 path = "src/main.rs"
 
 [dependencies]
+block2.workspace = true
 chewing.workspace = true
 chewing_imk_core = { path = "../chewing_imk_core" }
 log.workspace = true
@@ -17,4 +18,5 @@ objc2.workspace = true
 objc2-app-kit.workspace = true
 objc2-foundation.workspace = true
 objc2-input-method-kit.workspace = true
+objc2-quartz-core.workspace = true
 oslog.workspace = true

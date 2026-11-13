@@ -6,10 +6,9 @@
 use std::cell::RefCell;
 
 use objc2::MainThreadMarker;
-use objc2_app_kit::NSColor;
-use objc2_foundation::{NSMutableAttributedString, NSRect};
+use objc2_foundation::NSRect;
 
-use crate::panel::{TextPanel, append, attributes};
+use crate::panel::TextPanel;
 
 const FONT_SIZE: f64 = 15.0;
 /// windows-chewing-tsf shows notifications for 500 ms.
@@ -22,17 +21,7 @@ thread_local! {
 pub fn show(mtm: MainThreadMarker, message: &str, line: Option<NSRect>) {
     PANEL.with_borrow_mut(|slot| {
         let panel = slot.get_or_insert_with(|| TextPanel::new(mtm));
-        let text = NSMutableAttributedString::new();
-        append(
-            &text,
-            message,
-            &attributes(&NSColor::labelColor(), FONT_SIZE),
-        );
-        panel.set_text(&text);
-        if let Some(line) = line {
-            panel.move_near(mtm, line);
-        }
-        panel.show();
+        panel.show(mtm, message, FONT_SIZE, line);
         panel.hide_after(SHOW_SECONDS);
     });
 }

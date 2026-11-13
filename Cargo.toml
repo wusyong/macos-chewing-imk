@@ -13,11 +13,13 @@ license = "GPL-3.0-or-later"
 rust-version = "1.95"
 
 [workspace.dependencies]
+block2 = "0.6"
 chewing = "0.14.0-rc.1"
 log = "0.4"
 objc2 = "0.6"
 objc2-app-kit = "0.3"
 objc2-foundation = "0.3"
 objc2-input-method-kit = "0.3"
+objc2-quartz-core = "0.3"
 oslog = "0.2"
 zhconv = { version = "0.4.1", default-features = false, features = ["opencc"] }
