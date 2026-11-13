@@ -73,8 +73,9 @@ pub fn set_marked_text(
     };
 }
 
-/// The screen rectangle (bottom-left origin) of the line at `index` within
-/// the marked text, used to place the candidate window.
+/// The screen rectangle (bottom-left origin) of the line at `index`, used to
+/// place the candidate and notice windows. The index counts from the start
+/// of the marked text, or of the selection when there is none.
 pub fn line_rect(client: &AnyObject, index: usize) -> Option<NSRect> {
     // SAFETY: respondsToSelector: is safe to send to any object.
     let responds: bool = unsafe {

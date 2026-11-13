@@ -499,6 +499,24 @@ fn build(mtm: MainThreadMarker) -> Window {
             empty(),
             p.check(
                 mtm,
+                "自動學習常用詞",
+                |c| c.auto_learn_user_history,
+                |c, v| c.auto_learn_user_history = v,
+            ),
+        ],
+        [
+            empty(),
+            p.check(
+                mtm,
+                "自動學習新詞",
+                |c| c.auto_learn_new_words,
+                |c, v| c.auto_learn_new_words = v,
+            ),
+        ],
+        [
+            empty(),
+            p.check(
+                mtm,
                 "Ctrl + 數字從游標往前加詞",
                 |c| c.add_phrase_forward,
                 |c, v| c.add_phrase_forward = v,

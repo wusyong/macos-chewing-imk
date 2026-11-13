@@ -23,6 +23,8 @@ use crate::{candidate_window, client, menu, notice_window, prefs, state};
 thread_local! {
     /// Anchor of the candidate window within the current marked text.
     static LAST_ANCHOR: Cell<usize> = const { Cell::new(0) };
+    /// Whether the client has marked text from us.
+    static COMPOSING: Cell<bool> = const { Cell::new(false) };
 }
 
 define_class!(
@@ -199,7 +201,11 @@ impl ChewingController {
         let mut notice = None;
         for action in actions {
             match action {
-                Action::Commit(text) => client::insert_text(client, &text),
+                Action::Commit(text) => {
+                    // Inserting replaces the marked text.
+                    client::insert_text(client, &text);
+                    COMPOSING.set(false);
+                }
                 Action::UpdateComposition(composition) => {
                     // While selecting, libchewing puts the cursor in front of
                     // the character being chosen. At the very end there is no
@@ -208,6 +214,7 @@ impl ChewingController {
                     let index = composition.cursor.min(len.saturating_sub(1));
                     anchor = client::utf16_offset(&composition.text, index);
                     LAST_ANCHOR.set(anchor);
+                    COMPOSING.set(len > 0);
                     client::set_marked_text(self, client, &composition);
                 }
                 Action::ShowCandidates(list) => candidates = Some(list),
@@ -225,7 +232,12 @@ impl ChewingController {
             warn!("window requested off the main thread");
             return;
         };
-        let line = client::line_rect(client, anchor);
+        // Without marked text (e.g. the notice after a Shift tap that
+        // follows a commit) the index counts from the selection, so 0 is
+        // the caret. A stale anchor there points past the text, and some
+        // clients (Firefox) then answer with nothing.
+        let index = if COMPOSING.get() { anchor } else { 0 };
+        let line = client::line_rect(client, index);
         if let Some(list) = candidates {
             let (font_size, font_family) = state::with_core(|core| {
                 let cfg = core.config();
